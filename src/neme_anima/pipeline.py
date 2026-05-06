@@ -31,6 +31,24 @@ from neme_anima.video import Video, detect_scenes
 console = Console()
 
 
+def _flush_cuda_cache() -> None:
+    """Release PyTorch's CUDA allocator pool back to CUDA.
+
+    PyTorch's caching allocator never returns freed GPU memory to CUDA on its
+    own — it holds the pool for potential reuse. ONNX Runtime's
+    CUDAExecutionProvider allocates directly from CUDA, so it cannot claim the
+    memory PyTorch is sitting on. Flushing before (and periodically during) the
+    WD14 tagging loop gives the ONNX arena the headroom it needs and prevents
+    gradual VRAM exhaustion on cards with <= 32 GB.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _make_progress() -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.description}"),
@@ -371,6 +389,15 @@ def _run_tag_stage(
 
     tagger = Tagger(thresholds.tag)
     llm_active = bool(project.llm.enabled and project.llm.model)
+    flush_every = thresholds.tag.vram_flush_every
+
+    # Prior pipeline stages (detect/identify/dedup) leave PyTorch's CUDA
+    # allocator holding a large pool of freed-but-unclaimed VRAM. ONNX
+    # Runtime's CUDAExecutionProvider cannot claim that memory when it
+    # grows its workspace arena for EVA02_Large, so a pre-emptive flush
+    # here gives the WD14 session the headroom it needs.
+    _flush_cuda_cache()
+
     with _make_progress() as p:
         task = p.add_task("tag", total=len(pending))
         tagged = 0
@@ -394,6 +421,8 @@ def _run_tag_stage(
             p.advance(task)
             progress.stage_advance("tag")
             progress.stage_message("tag", f"{tagged} / {len(pending)} frames")
+            if flush_every and tagged % flush_every == 0:
+                _flush_cuda_cache()
     done_msg = f"{tagged} frame{'s' if tagged != 1 else ''} tagged"
     if swept_crop_sidecars:
         done_msg += f" · cleaned {swept_crop_sidecars} stray crop sidecar(s)"

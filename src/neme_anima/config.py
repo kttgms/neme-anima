@@ -76,6 +76,7 @@ class TagConfig:
     no_underline: bool = True
     drop_overlap: bool = True
     exclude_tags: tuple[str, ...] = ()
+    vram_flush_every: int = 32  # call torch.cuda.empty_cache() every N frames
 
 
 @dataclass
