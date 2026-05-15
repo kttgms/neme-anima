@@ -59,7 +59,7 @@ MODELS_DIR="${MODELS_DIR:-$HOME/.cache/neme-anima/models}"
 DEFAULTS_DIR="$HOME/.neme-anima"
 DEFAULTS_FILE="$DEFAULTS_DIR/training-defaults.json"
 
-DIT_FILE="$MODELS_DIR/anima-preview3-base.safetensors"
+DIT_FILE="$MODELS_DIR/anima-base-v1.0.safetensors"
 VAE_FILE="$MODELS_DIR/qwen_image_vae.safetensors"
 LLM_FILE="$MODELS_DIR/qwen_3_06b_base.safetensors"
 
@@ -251,7 +251,7 @@ else
             fail "failed to download $repo_path from circlestone-labs/Anima.
    If you hit a 401/403, run 'uv run -- hf auth login' and retry.
    If your network is the bottleneck, set SKIP_MODELS=1 and grab the files
-   manually into $MODELS_DIR (filenames: anima-preview3-base.safetensors,
+   manually into $MODELS_DIR (filenames: anima-base-v1.0.safetensors,
    qwen_image_vae.safetensors, qwen_3_06b_base.safetensors)."
         fi
         local src="$tmpdir/$repo_path"
@@ -268,7 +268,7 @@ else
         success "$label saved to $dest"
     }
 
-    download_one "split_files/diffusion_models/anima-preview3-base.safetensors" \
+    download_one "split_files/diffusion_models/anima-base-v1.0.safetensors" \
                  "$DIT_FILE" "Anima DiT"
     download_one "split_files/vae/qwen_image_vae.safetensors" \
                  "$VAE_FILE" "Qwen image VAE"

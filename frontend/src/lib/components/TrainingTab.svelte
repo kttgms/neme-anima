@@ -99,10 +99,10 @@
       key: "dit_path",
       label: "Anima DiT (transformer) file",
       expect: "file",
-      placeholder: "/data/models/anima-preview3-base.safetensors",
-      hint: "anima-preview3-base.safetensors (or a successor checkpoint).",
+      placeholder: "/data/models/anima-base-v1.0.safetensors",
+      hint: "anima-base-v1.0.safetensors (or a successor checkpoint).",
       tooltip:
-        "Anima base diffusion transformer (the DiT) you're fine-tuning. Typically anima-preview3-base.safetensors. This is the largest of the four files.",
+        "Anima base diffusion transformer (the DiT) you're fine-tuning. Typically anima-base-v1.0.safetensors. This is the largest of the four files.",
     },
     {
       key: "vae_path",

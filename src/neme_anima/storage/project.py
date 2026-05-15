@@ -134,7 +134,7 @@ class TrainingConfig:
 
     # Trainer paths — none of these are auto-downloaded.
     diffusion_pipe_dir: str = ""
-    dit_path: str = ""        # anima-preview3-base.safetensors
+    dit_path: str = ""        # anima-base-v1.0.safetensors
     vae_path: str = ""        # qwen_image_vae.safetensors
     llm_path: str = ""        # qwen_3_06b_base.safetensors
     launcher_override: str = ""  # empty -> built-in deepspeed command
