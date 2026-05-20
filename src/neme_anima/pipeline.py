@@ -23,10 +23,10 @@ from neme_anima.identify import MultiCharacterRouter
 from neme_anima.output import OutputWriter
 from neme_anima.pipeline_progress import NULL_PROGRESS, PipelineProgress
 from neme_anima.storage.metadata import FrameRecord
-from neme_anima.storage.project import Project
+from neme_anima.storage.project import Project, Source
 from neme_anima.tag import Tagger, join_sidecar, split_sidecar
 from neme_anima.track import Tracklet, track_scene
-from neme_anima.video import Video, detect_scenes
+from neme_anima.video import Scene, Video, detect_scenes
 
 console = Console()
 
@@ -82,6 +82,57 @@ def run_extract(
     except Exception as exc:
         progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
         raise
+
+
+def _allowed_frame_ranges(
+    source: Source, fps: float,
+) -> list[tuple[int, int]] | None:
+    """Convert a source's saved ``segments`` (in seconds) into frame ranges
+    using the video's actual ``fps``. Returns ``None`` when no segments are
+    configured so callers can short-circuit to "process the whole video"
+    without ever building a sentinel range. Each range is half-open
+    ``[start_frame, end_frame)`` like :class:`Scene` and is clamped to
+    ``start_frame >= 0`` (``end_frame`` is not capped to ``num_frames``
+    here — the scene-clip step does that intersection in one place).
+    """
+    if not source.segments:
+        return None
+    out: list[tuple[int, int]] = []
+    for seg in source.segments:
+        start_f = max(0, int(round(seg.start_seconds * fps)))
+        end_f = int(round(seg.end_seconds * fps))
+        if end_f > start_f:
+            out.append((start_f, end_f))
+    return out or None
+
+
+def _clip_scenes_to_ranges(
+    scenes: list[Scene], allowed_frame_ranges: list[tuple[int, int]] | None,
+) -> list[Scene]:
+    """Return a re-indexed list of scenes restricted to the union of
+    ``allowed_frame_ranges``. ``None`` is a pass-through so the legacy
+    "process the whole video" path is byte-identical to the pre-segments
+    behaviour. A scene that straddles a gap in the ranges is split into
+    multiple sub-scenes — each tracks independently downstream, which is
+    the desired behaviour (frames inside the omitted gap should not appear
+    in a tracklet).
+    """
+    if allowed_frame_ranges is None:
+        return scenes
+    out: list[Scene] = []
+    next_idx = 0
+    for sc in scenes:
+        for (rs, re_) in allowed_frame_ranges:
+            ostart = max(sc.start_frame, rs)
+            oend = min(sc.end_frame, re_)
+            if oend > ostart:
+                out.append(Scene(
+                    index=next_idx,
+                    start_frame=ostart,
+                    end_frame=oend,
+                ))
+                next_idx += 1
+    return out
 
 
 def _run_extract_inner(
@@ -145,6 +196,26 @@ def _run_extract_inner(
         content_threshold=thresholds.scene.threshold,
         min_scene_len_frames=thresholds.scene.min_scene_len_frames,
     )
+    # When the user has restricted this source to a set of time segments,
+    # clip the detected scenes to that union now — every downstream stage
+    # (detect, track, identify, dedup, tag) is per-scene so once the scene
+    # list reflects the allowed ranges, no other stage needs to know.
+    # ``None`` (no segments configured) is a pass-through that keeps the
+    # legacy whole-video path byte-identical.
+    allowed_ranges = _allowed_frame_ranges(source, vid.fps)
+    if allowed_ranges is not None:
+        original_count = len(scenes)
+        scenes = _clip_scenes_to_ranges(scenes, allowed_ranges)
+        console.print(
+            f"segments: {len(source.segments)} time range(s) → "
+            f"clipped {original_count} scene(s) to {len(scenes)} sub-scene(s)"
+        )
+        if not scenes:
+            raise ValueError(
+                "configured segments do not overlap the video — every range "
+                "falls outside the detected scenes (or past the video's "
+                f"duration of {vid.duration_seconds:.1f}s)"
+            )
     console.print(f"scenes: {len(scenes)}")
     writer.write_scenes(scenes)
     progress.stage_done("scenes", message=f"{len(scenes)} scene{'s' if len(scenes)!=1 else ''}")

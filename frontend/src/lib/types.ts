@@ -1,5 +1,14 @@
 // Mirrors the Pydantic models in src/neme_anima/server/api/*.py.
 
+/** A time-range the user wants the extraction pipeline to restrict itself
+ *  to. Stored in seconds (not frames) so it stays meaningful if the source
+ *  file is re-encoded at a different framerate. Empty list on a Source =
+ *  legacy "process the whole video" behaviour. */
+export interface Segment {
+  start_seconds: number;
+  end_seconds: number;
+}
+
 export interface Source {
   path: string;
   added_at: string;
@@ -22,6 +31,16 @@ export interface Source {
    *     differs — Re-process would silently use stale detections, so the
    *     UI flags Extract with a warning. */
   extraction_cache: "none" | "current" | "stale";
+  /** Per-source time-range restrictions. Empty list = process the whole
+   *  video. Editing the list flips ``extraction_cache`` to ``"stale"``
+   *  on the next project load. */
+  segments: Segment[];
+  /** ffprobe'd video duration, cached on the source after the first
+   *  segment-editor open so we don't repay the probe cost. ``null`` until
+   *  the modal has been opened at least once. */
+  duration_seconds: number | null;
+  /** Average framerate from ffprobe, cached alongside ``duration_seconds``. */
+  fps: number | null;
 }
 
 export interface RefImage {

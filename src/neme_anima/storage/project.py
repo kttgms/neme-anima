@@ -75,6 +75,18 @@ def _slugify_character_name(name: str) -> str:
 
 
 @dataclass
+class Segment:
+    """A time-range [start_seconds, end_seconds) inside a source video that the
+    user wants the pipeline to process. Stored in seconds (not frames) so the
+    record stays meaningful even if the file is re-encoded with a different
+    framerate; pipeline converts to frame indices at extraction time via the
+    video's actual fps.
+    """
+    start_seconds: float
+    end_seconds: float
+
+
+@dataclass
 class Source:
     """An input video tracked by the project.
 
@@ -82,11 +94,19 @@ class Source:
     listing the refs to skip for *that* character on this source. Old projects
     persisted a flat list (no character context) — auto-migrated on load to
     ``{"default": [...]}``.
+
+    ``segments`` is an optional list of time-ranges to restrict extraction to.
+    Empty list = process the whole video (legacy / default behaviour).
+    ``duration_seconds`` / ``fps`` are convenience caches populated on first
+    ffprobe so the segment-editor UI doesn't pay the probe cost on every open.
     """
     path: str                         # absolute path to the video file
     added_at: str                     # ISO-8601 UTC
     excluded_refs: dict[str, list[str]] = field(default_factory=dict)
     extraction_runs: list[dict] = field(default_factory=list)
+    segments: list[Segment] = field(default_factory=list)
+    duration_seconds: float | None = None
+    fps: float | None = None
 
 
 @dataclass
@@ -407,11 +427,30 @@ class Project:
             excluded = s.get("excluded_refs", {})
             if isinstance(excluded, list):
                 excluded = {default_slug: list(excluded)} if excluded else {}
+            segments_raw = s.get("segments") or []
+            segments: list[Segment] = []
+            for seg in segments_raw:
+                try:
+                    segments.append(Segment(
+                        start_seconds=float(seg["start_seconds"]),
+                        end_seconds=float(seg["end_seconds"]),
+                    ))
+                except (KeyError, TypeError, ValueError):
+                    # Silently drop malformed rows — the field is optional
+                    # and a corrupt entry shouldn't prevent project load.
+                    continue
+            duration_raw = s.get("duration_seconds")
+            fps_raw = s.get("fps")
             out.append(Source(
                 path=s["path"],
                 added_at=s["added_at"],
                 excluded_refs=dict(excluded),
                 extraction_runs=s.get("extraction_runs", []),
+                segments=segments,
+                duration_seconds=(
+                    float(duration_raw) if duration_raw is not None else None
+                ),
+                fps=float(fps_raw) if fps_raw is not None else None,
             ))
         return out
 

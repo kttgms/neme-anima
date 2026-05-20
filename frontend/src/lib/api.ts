@@ -1,6 +1,6 @@
 import type {
   CharacterView, FrameRecord, FramesPage, LLMConfig,
-  ProjectListEntry, ProjectView, QueueItem,
+  ProjectListEntry, ProjectView, QueueItem, Segment,
   TrainingConfig, TrainingConfigResponse, TrainingStatus, TrainingRun,
   TrainingCheckpoint, TrainingDatasetPreview, TrainingPathCheck,
   TrainingLogResponse, TrainingTomlPreview,
@@ -83,6 +83,32 @@ export const reimportSources = (slug: string) =>
 
 export const sourceThumbnailUrl = (slug: string, idx: number) =>
   `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/thumbnail`;
+
+/** URL of the raw video file for the segment-editor's <video> element.
+ *  The browser will refuse to decode unsupported codecs (HEVC, AV1 in
+ *  containers it can't play) — the modal listens for `error` events and
+ *  falls back to {@link sourcePreviewUrl} when that happens. */
+export const sourceStreamUrl = (slug: string, idx: number) =>
+  `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/stream`;
+
+/** URL of a 480p H.264 transcode of the source. Backend generates this
+ *  lazily on first request and caches it; while transcoding the endpoint
+ *  returns 202 with `Retry-After`, and the modal re-polls every couple
+ *  of seconds until it flips to 200. */
+export const sourcePreviewUrl = (slug: string, idx: number) =>
+  `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/preview`;
+
+export const getSourceDuration = (slug: string, idx: number) =>
+  request<{ duration_seconds: number; fps: number }>(
+    `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/duration`,
+  );
+
+export const saveSourceSegments = (
+  slug: string, idx: number, segments: Segment[],
+) => request<{ segments: Segment[] }>(
+  `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/segments`,
+  { method: "PUT", body: JSON.stringify({ segments }) },
+);
 
 export const removeSource = (slug: string, idx: number) =>
   request<void>(`/api/projects/${encodeURIComponent(slug)}/sources/${idx}`, { method: "DELETE" });

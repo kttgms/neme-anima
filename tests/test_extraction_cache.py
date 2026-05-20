@@ -229,6 +229,7 @@ def test_meta_matches_is_field_by_field(tmp_path: Path):
         scene={**meta.scene, "future_field": 42},
         detect=meta.detect,
         track=meta.track,
+        segments=meta.segments,
         stamped_at=meta.stamped_at,
     )
     assert meta_with_extra.matches(t)

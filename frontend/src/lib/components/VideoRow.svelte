@@ -8,6 +8,7 @@
   import ConfirmWipeModal from "./ConfirmWipeModal.svelte";
   import PipelineRunner from "./PipelineRunner.svelte";
   import RefStrip from "./RefStrip.svelte";
+  import SegmentEditorModal from "./SegmentEditorModal.svelte";
 
   type Props = {
     source: Source;
@@ -49,6 +50,11 @@
 
   let busy = $state(false);
   let thumbBroken = $state(false);
+  // Segment-editor modal lifecycle. Only the row that opened it owns the
+  // boolean — the modal closes itself by calling onClose, which flips this
+  // back to false and triggers a project reload so the row's segment-count
+  // label and extraction_cache flag refresh.
+  let editingSegments = $state(false);
 
   /** Fetch the wipe preview, then either short-circuit straight to the
    *  job submission (no kept frames will be wiped) or open the
@@ -193,6 +199,28 @@
             : "Quickly re-evaluate identification, frame selection, dedup, and tagging using the cached detections — typically under a minute",
   );
   let rerunPrimary = $derived(cacheState === "current");
+
+  // ---- segments state for the row label ----
+  let segmentCount = $derived(source.segments?.length ?? 0);
+  let segmentTotalSeconds = $derived.by(() => {
+    let total = 0;
+    for (const s of source.segments ?? []) {
+      total += Math.max(0, s.end_seconds - s.start_seconds);
+    }
+    return total;
+  });
+  function formatSecondsCompact(seconds: number): string {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "0:00";
+    const total = Math.round(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+  let segmentsLabel = $derived(
+    segmentCount === 0
+      ? "Whole video"
+      : `${segmentCount} segment${segmentCount === 1 ? "" : "s"} · ${formatSecondsCompact(segmentTotalSeconds)}`,
+  );
 </script>
 
 <div
@@ -200,8 +228,17 @@
     {source.extracted ? 'border-emerald-500/70 hover:border-emerald-400' : 'border-ink-700 hover:border-ink-600'}"
   title={source.extracted ? 'Already extracted (frames on disk)' : ''}
 >
-  <!-- Thumbnail (left). Falls back to a play glyph if extraction fails. -->
-  <div class="w-24 h-14 rounded overflow-hidden bg-ink-950 border border-ink-800 flex-shrink-0 flex items-center justify-center">
+  <!-- Thumbnail (left). Falls back to a play glyph if extraction fails.
+       Clicking opens the segment editor modal — same action as the
+       "Whole video / N segments" button in the action group below. -->
+  <button
+    type="button"
+    onclick={() => (editingSegments = true)}
+    title={segmentCount === 0
+      ? "Open segment editor (currently processing the whole video)"
+      : `Open segment editor (${segmentCount} segment${segmentCount === 1 ? "" : "s"} configured)`}
+    class="relative w-24 h-14 rounded overflow-hidden bg-ink-950 border border-ink-800 flex-shrink-0 flex items-center justify-center hover:border-indigo-500 focus:border-indigo-500 focus:outline-none transition-colors group"
+  >
     {#if thumbUrl && !thumbBroken}
       <img
         src={thumbUrl}
@@ -213,7 +250,22 @@
     {:else}
       <span class="text-slate-600 text-lg">▶</span>
     {/if}
-  </div>
+    <!-- Segment-count badge: only shown when segments are configured, so
+         videos still in "process whole" mode aren't visually noisier than
+         before this feature shipped. -->
+    {#if segmentCount > 0}
+      <span
+        class="absolute top-0.5 right-0.5 bg-indigo-500/90 text-white text-[10px] font-medium px-1 py-0.5 rounded leading-none tabular-nums"
+        title="{segmentCount} segment{segmentCount === 1 ? '' : 's'} configured"
+      >
+        {segmentCount}
+      </span>
+    {/if}
+    <!-- Edit hint on hover — keeps the thumbnail clean otherwise. -->
+    <span
+      class="absolute inset-0 bg-ink-950/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] text-slate-100 font-medium transition-opacity pointer-events-none"
+    >Edit segments</span>
+  </button>
 
   <!-- Center: when a job exists, split 50/50 between the source-info block and the pipeline. -->
   <div class={job ? "grid grid-cols-2 gap-3 min-w-0 items-center" : "min-w-0"}>
@@ -260,6 +312,24 @@
   </div>
 
   <div class="flex gap-1.5">
+    <!-- Segments-mode button: same trigger as clicking the thumbnail.
+         Reads at-a-glance: "Whole video" (default) vs "2 segments · 3:15".
+         Indigo-tinted when segments are active so the user can spot at a
+         glance which rows are time-restricted. -->
+    <button
+      type="button"
+      onclick={() => (editingSegments = true)}
+      title={segmentCount === 0
+        ? "Pick specific time ranges to process instead of the whole video"
+        : `${segmentCount} time range${segmentCount === 1 ? '' : 's'} configured — click to edit`}
+      class="px-2.5 py-1.5 text-xs rounded inline-flex items-center gap-1 border
+        {segmentCount > 0
+          ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200 hover:bg-indigo-500/25'
+          : 'bg-ink-800 hover:bg-ink-700 text-slate-400 border-ink-700'}"
+    >
+      <span class="text-[14px] leading-none">⏱</span>
+      <span class="tabular-nums">{segmentsLabel}</span>
+    </button>
     <button
       type="button"
       onclick={run}
@@ -304,5 +374,19 @@
     action={pendingAction.kind}
     onconfirm={confirmPending}
     oncancel={cancelPending}
+  />
+{/if}
+
+{#if editingSegments}
+  <SegmentEditorModal
+    {source}
+    {sourceIdx}
+    onClose={async () => {
+      editingSegments = false;
+      // Reload project so the updated segments/extraction_cache flow
+      // back into this row's derived state without a hard refresh.
+      const slug = projectsStore.active?.slug;
+      if (slug) await projectsStore.load(slug);
+    }}
   />
 {/if}

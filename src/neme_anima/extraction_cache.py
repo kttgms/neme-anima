@@ -52,25 +52,37 @@ class ExtractionCacheMeta:
     informational — the freshness comparison is content-based, not time-
     based, so a quick edit-and-revert cycle correctly reads as "current"
     even if minutes pass.
+
+    ``segments`` is the list of ``{start_seconds, end_seconds}`` dicts the
+    user had configured on the source at extract time. Empty list = the
+    whole video was processed (legacy / default). Editing segments after
+    extraction therefore flips the cache to ``stale``.
     """
     version: int
     scene: dict
     detect: dict
     track: dict
+    segments: list[dict]
     stamped_at: str  # ISO-8601 UTC
 
     @classmethod
-    def from_thresholds(cls, t: Thresholds) -> ExtractionCacheMeta:
+    def from_thresholds(
+        cls, t: Thresholds, *, segments: list[dict] | None = None,
+    ) -> ExtractionCacheMeta:
         return cls(
             version=_META_VERSION,
             scene=asdict(t.scene),
             detect=asdict(t.detect),
             track=asdict(t.track),
+            segments=_normalize_segments(segments or []),
             stamped_at=datetime.now(UTC).isoformat(),
         )
 
-    def matches(self, t: Thresholds) -> bool:
-        """True iff every scan-affecting threshold matches what's in ``t``.
+    def matches(
+        self, t: Thresholds, *, segments: list[dict] | None = None,
+    ) -> bool:
+        """True iff every scan-affecting threshold (and the segment list)
+        matches what's in ``t`` / ``segments``.
 
         Equality is by-field rather than full-dataclass so a future
         non-cache-invalidating field added to one of the dataclasses
@@ -80,11 +92,33 @@ class ExtractionCacheMeta:
         """
         if self.version != _META_VERSION:
             return False
+        if _normalize_segments(segments or []) != _normalize_segments(self.segments):
+            return False
         return (
             _section_matches(self.scene, asdict(t.scene), SceneConfig)
             and _section_matches(self.detect, asdict(t.detect), DetectConfig)
             and _section_matches(self.track, asdict(t.track), TrackConfig)
         )
+
+
+def _normalize_segments(segs: list[dict]) -> list[tuple[float, float]]:
+    """Canonical segment representation for equality comparison.
+
+    Rounded to 1 ms to avoid float-jitter false positives, then sorted so
+    list order can't matter. Missing keys are treated as 0.0 (defensive —
+    a malformed entry that survived the validator would just register as
+    a mismatch rather than crash the freshness check).
+    """
+    norm: list[tuple[float, float]] = []
+    for s in segs:
+        try:
+            start = round(float(s.get("start_seconds", 0.0)), 3)
+            end = round(float(s.get("end_seconds", 0.0)), 3)
+        except (TypeError, ValueError):
+            continue
+        norm.append((start, end))
+    norm.sort()
+    return norm
 
 
 def _section_matches(stamped: dict, current: dict, dc_cls: type) -> bool:
@@ -112,15 +146,35 @@ def stamp_meta(project: Project, video_stem: str, thresholds: Thresholds) -> Pat
     Creates the cache dir if needed (it should already exist after
     write_scenes / write_tracklets, but defensive). Atomic via tmp+rename
     so a partial write never poisons cache_state into reading garbage.
+    The current source's segments are folded into the snapshot so that
+    later edits to segments correctly invalidate the cache.
     """
     cache_dir = project.cache_dir_for(video_stem)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    meta = ExtractionCacheMeta.from_thresholds(thresholds)
+    segments = _segments_for_stem(project, video_stem)
+    meta = ExtractionCacheMeta.from_thresholds(thresholds, segments=segments)
     target = _meta_path_for(project, video_stem)
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(asdict(meta), indent=2), encoding="utf-8")
     tmp.replace(target)
     return target
+
+
+def _segments_for_stem(project: Project, video_stem: str) -> list[dict]:
+    """Return the source's segments as plain dicts for snapshotting.
+
+    Looked up by video_stem (same key the cache directory uses). Returns
+    ``[]`` when no source matches (e.g. the source was deleted but its
+    cache still exists), which is harmless: the next freshness check
+    against an empty current-segment list will still match itself.
+    """
+    for s in project.sources:
+        if Path(s.path).stem == video_stem:
+            return [
+                {"start_seconds": seg.start_seconds, "end_seconds": seg.end_seconds}
+                for seg in s.segments
+            ]
+    return []
 
 
 def _read_meta(project: Project, video_stem: str) -> ExtractionCacheMeta | None:
@@ -139,6 +193,7 @@ def _read_meta(project: Project, video_stem: str) -> ExtractionCacheMeta | None:
         scene=dict(raw.get("scene") or {}),
         detect=dict(raw.get("detect") or {}),
         track=dict(raw.get("track") or {}),
+        segments=list(raw.get("segments") or []),
         stamped_at=str(raw.get("stamped_at") or ""),
     )
 
@@ -169,7 +224,10 @@ def cache_state(
     meta = _read_meta(project, video_stem)
     if meta is None:
         return "stale"
-    return "current" if meta.matches(current_thresholds) else "stale"
+    current_segments = _segments_for_stem(project, video_stem)
+    if meta.matches(current_thresholds, segments=current_segments):
+        return "current"
+    return "stale"
 
 
 def cache_state_for_source(
