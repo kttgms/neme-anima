@@ -27,6 +27,11 @@ Detections and tracklets are cached so threshold re-runs skip the slow stages.
 
 ## Requirements
 
+System packages (`install_and_run.sh` installs these via apt on Debian/Ubuntu/WSL2; install manually on other distros):
+
+- `ffmpeg` (used by the UI for video thumbnails, segment previews, and probing)
+- `git` (used to clone the trainer)
+
 For the extractor/tagger:
 
 - NVIDIA GPU, 4 GB VRAM minimum, 8 GB comfortable

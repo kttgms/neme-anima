@@ -5,15 +5,18 @@
 #
 # Walks an entry-level user from a fresh checkout to a running UI:
 #   1. installs uv (Python package manager) if missing
-#   2. installs Node.js + npm if missing (apt with sudo, or nvm fallback)
-#   3. installs Python deps with the GPU extras (`uv sync --group gpu`)
-#   4. builds the frontend bundle
-#   5. clones tdrussell/diffusion-pipe into $DIFFUSION_PIPE_DIR (default: ~/diffusion-pipe)
-#   6. creates a venv inside that clone and installs its requirements
-#   7. downloads the three Anima training weight files from HuggingFace
-#   8. writes ~/.neme-anima/training-defaults.json so the UI's Settings tab
+#   2. installs ffmpeg + git via apt if missing (sudo will prompt if needed;
+#      ffmpeg is used for thumbnails and segment-editor previews, git for the
+#      trainer clone)
+#   3. installs Node.js + npm if missing (apt with sudo, or nvm fallback)
+#   4. installs Python deps with the GPU extras (`uv sync --group gpu`)
+#   5. builds the frontend bundle
+#   6. clones tdrussell/diffusion-pipe into $DIFFUSION_PIPE_DIR (default: ~/diffusion-pipe)
+#   7. creates a venv inside that clone and installs its requirements
+#   8. downloads the three Anima training weight files from HuggingFace
+#   9. writes ~/.neme-anima/training-defaults.json so the UI's Settings tab
 #      shows the four trainer paths pre-filled for new projects
-#   9. launches `uv run neme-anima ui`
+#  10. launches `uv run neme-anima ui`
 #
 # Usage: bash install_and_run.sh
 #
@@ -71,7 +74,7 @@ info "models:         $MODELS_DIR"
 
 # ----- 1. uv ----------------------------------------------------------------
 
-step "1/9  Checking for uv"
+step "1/10  Checking for uv"
 
 if ! command -v uv >/dev/null 2>&1; then
     info "installing uv via the official script…"
@@ -89,9 +92,50 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 success "uv $(uv --version | awk '{print $2}')"
 
-# ----- 2. node + npm --------------------------------------------------------
+# ----- 2. system packages (ffmpeg, git) ------------------------------------
 
-step "2/9  Checking for Node.js + npm"
+step "2/10  Checking for system packages (ffmpeg, git)"
+
+need_pkgs=()
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+    need_pkgs+=("ffmpeg")
+fi
+if ! command -v git >/dev/null 2>&1; then
+    need_pkgs+=("git")
+fi
+
+if (( ${#need_pkgs[@]} == 0 )); then
+    success "ffmpeg / ffprobe / git all present"
+else
+    info "missing: ${need_pkgs[*]}"
+    if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
+        fail "can't install ${need_pkgs[*]} automatically on this system.
+   Install them manually with your package manager and re-run.
+   On Debian/Ubuntu/WSL2: sudo apt-get install -y ${need_pkgs[*]}"
+    fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        fail "sudo not available — install manually:
+       apt-get install -y ${need_pkgs[*]}"
+    fi
+    if sudo -n true 2>/dev/null; then
+        info "installing via apt (passwordless sudo)…"
+    else
+        info "installing via apt (sudo may prompt for your password)…"
+    fi
+    sudo apt-get update -y
+    sudo apt-get install -y "${need_pkgs[@]}"
+
+    for bin in ffmpeg ffprobe git; do
+        if ! command -v "$bin" >/dev/null 2>&1; then
+            fail "$bin still not found after install — bailing out."
+        fi
+    done
+    success "ffmpeg / ffprobe / git installed"
+fi
+
+# ----- 3. node + npm --------------------------------------------------------
+
+step "3/10  Checking for Node.js + npm"
 
 need_node=true
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
@@ -129,16 +173,16 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
 fi
 success "node $(node -v) / npm $(npm -v)"
 
-# ----- 3. python deps -------------------------------------------------------
+# ----- 4. python deps -------------------------------------------------------
 
-step "3/9  Installing Python dependencies (uv sync --group gpu)"
+step "4/10  Installing Python dependencies (uv sync --group gpu)"
 info "this fetches PyTorch CUDA wheels — first run may take several minutes…"
 uv sync --group gpu
 success "Python deps installed"
 
-# ----- 4. frontend ----------------------------------------------------------
+# ----- 5. frontend ----------------------------------------------------------
 
-step "4/9  Building the frontend"
+step "5/10  Building the frontend"
 pushd frontend >/dev/null
 if [[ ! -d node_modules ]] || [[ package.json -nt node_modules ]]; then
     info "running npm install…"
@@ -151,9 +195,9 @@ npm run build
 popd >/dev/null
 success "frontend bundle built into src/neme_anima/server/static"
 
-# ----- 5. clone diffusion-pipe ---------------------------------------------
+# ----- 6. clone diffusion-pipe ---------------------------------------------
 
-step "5/9  Cloning tdrussell/diffusion-pipe"
+step "6/10  Cloning tdrussell/diffusion-pipe"
 if [[ -d "$DIFFUSION_PIPE_DIR/.git" ]]; then
     info "already present at $DIFFUSION_PIPE_DIR — pulling latest"
     git -C "$DIFFUSION_PIPE_DIR" pull --ff-only || warn "git pull failed (continuing with current checkout)"
@@ -165,9 +209,9 @@ if [[ ! -f "$DIFFUSION_PIPE_DIR/train.py" ]]; then
 fi
 success "diffusion-pipe at $DIFFUSION_PIPE_DIR"
 
-# ----- 6. diffusion-pipe venv ----------------------------------------------
+# ----- 7. diffusion-pipe venv ----------------------------------------------
 
-step "6/9  Setting up diffusion-pipe's Python venv"
+step "7/10  Setting up diffusion-pipe's Python venv"
 pushd "$DIFFUSION_PIPE_DIR" >/dev/null
 needs_dp_venv=true
 if [[ ! -d .venv ]]; then
@@ -212,9 +256,9 @@ fi
 popd >/dev/null
 success "diffusion-pipe venv ready"
 
-# ----- 7. download model weights --------------------------------------------
+# ----- 8. download model weights --------------------------------------------
 
-step "7/9  Downloading Anima training weights"
+step "8/10  Downloading Anima training weights"
 if [[ "${SKIP_MODELS:-}" == "1" ]]; then
     warn "SKIP_MODELS=1 set — skipping ~14 GB download"
 else
@@ -276,9 +320,9 @@ else
                  "$LLM_FILE" "Qwen 3 0.6B text encoder"
 fi
 
-# ----- 8. write training-defaults.json --------------------------------------
+# ----- 9. write training-defaults.json --------------------------------------
 
-step "8/9  Writing training defaults to $DEFAULTS_FILE"
+step "9/10  Writing training defaults to $DEFAULTS_FILE"
 mkdir -p "$DEFAULTS_DIR"
 cat > "$DEFAULTS_FILE" <<JSON
 {
@@ -290,9 +334,9 @@ cat > "$DEFAULTS_FILE" <<JSON
 JSON
 success "defaults written — new projects will load these in the Settings tab"
 
-# ----- 9. launch ------------------------------------------------------------
+# ----- 10. launch -----------------------------------------------------------
 
-step "9/9  Launching the UI"
+step "10/10  Launching the UI"
 if [[ "${SKIP_LAUNCH:-}" == "1" ]]; then
     info "SKIP_LAUNCH=1 set — install complete, not starting the UI."
     info "to start it later, run: ${BOLD}uv run neme-anima ui${RESET}"
