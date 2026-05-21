@@ -69,12 +69,21 @@ class ExtractionCacheMeta:
     def from_thresholds(
         cls, t: Thresholds, *, segments: list[dict] | None = None,
     ) -> ExtractionCacheMeta:
+        # Store as plain dicts (not the normalized tuple form) so the on-disk
+        # JSON shape matches the ``list[dict]`` field type and round-trips
+        # through ``_normalize_segments`` on reload. Older snapshots written
+        # before this fix landed contain ``[start, end]`` lists; the loader
+        # tolerates both via ``_normalize_segments``.
+        normalized = _normalize_segments(segments or [])
         return cls(
             version=_META_VERSION,
             scene=asdict(t.scene),
             detect=asdict(t.detect),
             track=asdict(t.track),
-            segments=_normalize_segments(segments or []),
+            segments=[
+                {"start_seconds": start, "end_seconds": end}
+                for start, end in normalized
+            ],
             stamped_at=datetime.now(UTC).isoformat(),
         )
 
@@ -101,19 +110,27 @@ class ExtractionCacheMeta:
         )
 
 
-def _normalize_segments(segs: list[dict]) -> list[tuple[float, float]]:
+def _normalize_segments(segs: list) -> list[tuple[float, float]]:
     """Canonical segment representation for equality comparison.
 
     Rounded to 1 ms to avoid float-jitter false positives, then sorted so
-    list order can't matter. Missing keys are treated as 0.0 (defensive —
-    a malformed entry that survived the validator would just register as
-    a mismatch rather than crash the freshness check).
+    list order can't matter. Accepts either the live dict shape
+    (``{"start_seconds": ..., "end_seconds": ...}``) or the legacy
+    ``[start, end]`` list/tuple shape that older meta files on disk persist
+    — the JSON round-trip used to turn the normalized tuples back into
+    lists, so any pre-fix snapshot reads as a list-of-lists.
     """
     norm: list[tuple[float, float]] = []
     for s in segs:
         try:
-            start = round(float(s.get("start_seconds", 0.0)), 3)
-            end = round(float(s.get("end_seconds", 0.0)), 3)
+            if isinstance(s, dict):
+                start = round(float(s.get("start_seconds", 0.0)), 3)
+                end = round(float(s.get("end_seconds", 0.0)), 3)
+            elif isinstance(s, (list, tuple)) and len(s) >= 2:
+                start = round(float(s[0]), 3)
+                end = round(float(s[1]), 3)
+            else:
+                continue
         except (TypeError, ValueError):
             continue
         norm.append((start, end))

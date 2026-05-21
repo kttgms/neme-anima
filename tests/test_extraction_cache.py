@@ -215,6 +215,54 @@ def test_stamp_writes_meta_atomically(tmp_path: Path):
     assert "scene" in raw and "detect" in raw and "track" in raw
 
 
+def test_segments_survive_json_round_trip(tmp_path: Path):
+    """Regression: ``from_thresholds`` previously stored segments as the
+    normalized ``(start, end)`` tuples, which JSON serialized as lists.
+    Re-reading the meta then fed a list-of-lists back into
+    ``_normalize_segments``, which crashed on ``.get()``. The state must
+    compute cleanly with segments configured and read back as 'current'."""
+    from neme_anima.storage.project import Segment
+    project = Project.create(tmp_path / "p", name="x")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
+    project.add_source(vid)
+    project.sources[0].segments = [Segment(start_seconds=1.0, end_seconds=2.5)]
+    _make_parquet(project, "ep01")
+    t = Thresholds()
+    stamp_meta(project, "ep01", t)
+    assert cache_state(
+        project=project, video_stem="ep01", current_thresholds=t,
+    ) == "current"
+
+
+def test_legacy_list_segments_in_meta_still_compare(tmp_path: Path):
+    """Snapshots written before the round-trip fix have segments persisted
+    as ``[[start, end], ...]``. The comparator must tolerate that shape so
+    those projects don't crash on the project-view endpoint and the cache
+    still reads as current when the underlying values match."""
+    project = Project.create(tmp_path / "p", name="x")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
+    project.add_source(vid)
+    from neme_anima.storage.project import Segment
+    project.sources[0].segments = [Segment(start_seconds=1.0, end_seconds=2.5)]
+    _make_parquet(project, "ep01")
+    cache_dir = project.cache_dir_for("ep01")
+    (cache_dir / "extraction_meta.json").write_text(json.dumps({
+        "version": 1,
+        "scene": {}, "detect": {}, "track": {},
+        # The pre-fix on-disk shape: tuples turned into JSON lists.
+        "segments": [[1.0, 2.5]],
+        "stamped_at": "2025-01-01T00:00:00+00:00",
+    }), encoding="utf-8")
+    # The empty section dicts make the threshold sections "mismatch" by
+    # design — what we care about is that the call doesn't raise.
+    state = cache_state(
+        project=project, video_stem="ep01", current_thresholds=Thresholds(),
+    )
+    assert state in ("current", "stale")
+
+
 def test_meta_matches_is_field_by_field(tmp_path: Path):
     """A future Thresholds field added to one of the cached sections
     must NOT cause every old meta to read as stale — the comparison is
