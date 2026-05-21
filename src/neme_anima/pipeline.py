@@ -106,35 +106,6 @@ def _allowed_frame_ranges(
     return out or None
 
 
-def _clip_scenes_to_ranges(
-    scenes: list[Scene], allowed_frame_ranges: list[tuple[int, int]] | None,
-) -> list[Scene]:
-    """Return a re-indexed list of scenes restricted to the union of
-    ``allowed_frame_ranges``. ``None`` is a pass-through so the legacy
-    "process the whole video" path is byte-identical to the pre-segments
-    behaviour. A scene that straddles a gap in the ranges is split into
-    multiple sub-scenes — each tracks independently downstream, which is
-    the desired behaviour (frames inside the omitted gap should not appear
-    in a tracklet).
-    """
-    if allowed_frame_ranges is None:
-        return scenes
-    out: list[Scene] = []
-    next_idx = 0
-    for sc in scenes:
-        for (rs, re_) in allowed_frame_ranges:
-            ostart = max(sc.start_frame, rs)
-            oend = min(sc.end_frame, re_)
-            if oend > ostart:
-                out.append(Scene(
-                    index=next_idx,
-                    start_frame=ostart,
-                    end_frame=oend,
-                ))
-                next_idx += 1
-    return out
-
-
 def _run_extract_inner(
     *, project: Project, source_idx: int, progress: PipelineProgress
 ) -> None:
@@ -191,30 +162,30 @@ def _run_extract_inner(
     )
 
     progress.stage_start("scenes", "Scene detection", message="Analysing shots")
+    # When the user has restricted this source to a set of time segments,
+    # hand the frame ranges to detect_scenes so PySceneDetect only scans
+    # those windows. ContentDetector is a purely local frame-to-frame
+    # algorithm, so per-window scans produce the same cuts as a whole-
+    # video scan clipped to the same windows — at a fraction of the
+    # wall-clock cost on a long source. ``None`` (no segments configured)
+    # keeps the legacy whole-video path byte-identical.
+    allowed_ranges = _allowed_frame_ranges(source, vid.fps)
     scenes = detect_scenes(
         video_path,
         content_threshold=thresholds.scene.threshold,
         min_scene_len_frames=thresholds.scene.min_scene_len_frames,
+        time_ranges=allowed_ranges,
     )
-    # When the user has restricted this source to a set of time segments,
-    # clip the detected scenes to that union now — every downstream stage
-    # (detect, track, identify, dedup, tag) is per-scene so once the scene
-    # list reflects the allowed ranges, no other stage needs to know.
-    # ``None`` (no segments configured) is a pass-through that keeps the
-    # legacy whole-video path byte-identical.
-    allowed_ranges = _allowed_frame_ranges(source, vid.fps)
     if allowed_ranges is not None:
-        original_count = len(scenes)
-        scenes = _clip_scenes_to_ranges(scenes, allowed_ranges)
         console.print(
             f"segments: {len(source.segments)} time range(s) → "
-            f"clipped {original_count} scene(s) to {len(scenes)} sub-scene(s)"
+            f"{len(scenes)} scene(s)"
         )
         if not scenes:
             raise ValueError(
                 "configured segments do not overlap the video — every range "
-                "falls outside the detected scenes (or past the video's "
-                f"duration of {vid.duration_seconds:.1f}s)"
+                "falls outside the video (or past its duration of "
+                f"{vid.duration_seconds:.1f}s)"
             )
     console.print(f"scenes: {len(scenes)}")
     writer.write_scenes(scenes)

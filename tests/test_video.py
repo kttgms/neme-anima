@@ -77,6 +77,56 @@ def test_detect_two_scenes(two_scene_clip: Path):
     assert scenes[-1].end_frame >= 30
 
 
+def test_detect_scenes_time_ranges_preserves_cut_inside_window(two_scene_clip: Path):
+    """Restricting detection to a sub-range that straddles the cut still
+    finds the cut and returns scenes whose frame numbers are absolute to
+    the video (not seek-relative)."""
+    scenes = detect_scenes(
+        two_scene_clip,
+        content_threshold=27.0,
+        min_scene_len_frames=4,
+        time_ranges=[(10, 50)],
+    )
+    assert len(scenes) >= 2, scenes
+    # Coverage is bounded by the window.
+    assert scenes[0].start_frame >= 10
+    assert scenes[-1].end_frame <= 50
+    # Indices are sequential starting at 0 across the whole returned list.
+    assert [s.index for s in scenes] == list(range(len(scenes)))
+    # Adjacent scenes tile inside the window — no gaps from clipping.
+    for a, b in zip(scenes, scenes[1:]):
+        assert a.end_frame == b.start_frame
+
+
+def test_detect_scenes_disjoint_ranges_indexed_sequentially(two_scene_clip: Path):
+    """Two disjoint ranges that each miss the cut produce one scene each,
+    indexed 0 then 1, ordered by start_frame regardless of input order."""
+    scenes = detect_scenes(
+        two_scene_clip,
+        content_threshold=27.0,
+        min_scene_len_frames=4,
+        # Intentionally out of order — sort happens inside detect_scenes.
+        time_ranges=[(40, 60), (0, 20)],
+    )
+    assert len(scenes) == 2, scenes
+    assert scenes[0].start_frame == 0 and scenes[0].index == 0
+    assert scenes[1].start_frame == 40 and scenes[1].index == 1
+
+
+def test_detect_scenes_empty_time_ranges_returns_nothing(two_scene_clip: Path):
+    """An empty ranges list is a valid (if useless) call — must return
+    no scenes rather than falling back to the whole video. The pipeline
+    treats empty results as a "segments don't overlap" error and surfaces
+    that to the user."""
+    scenes = detect_scenes(
+        two_scene_clip,
+        content_threshold=27.0,
+        min_scene_len_frames=4,
+        time_ranges=[],
+    )
+    assert scenes == []
+
+
 def test_detect_scenes_returns_at_least_one_for_static_clip(tmp_path: Path):
     # A clip with no cuts: 30 frames of identical blue.
     p = tmp_path / "static.mp4"
