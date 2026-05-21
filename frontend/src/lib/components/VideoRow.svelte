@@ -224,10 +224,11 @@
 </script>
 
 <div
-  class="bg-ink-900 border rounded-xl px-3 py-3 mb-2.5 grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center
+  class="bg-ink-900 border rounded-xl px-3 py-3 mb-2.5 flex flex-col gap-3
     {source.extracted ? 'border-emerald-500/70 hover:border-emerald-400' : 'border-ink-700 hover:border-ink-600'}"
   title={source.extracted ? 'Already extracted (frames on disk)' : ''}
 >
+<div class="grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center">
   <!-- Thumbnail (left). Falls back to a play glyph if extraction fails.
        Clicking opens the segment editor modal — same action as the
        "Whole video / N segments" button in the action group below. -->
@@ -267,48 +268,47 @@
     >Edit segments</span>
   </button>
 
-  <!-- Center: when a job exists, split 50/50 between the source-info block and the pipeline. -->
-  <div class={job ? "grid grid-cols-2 gap-3 min-w-0 items-center" : "min-w-0"}>
-    <div class="flex flex-col gap-1.5 min-w-0">
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="text-sm text-slate-200 font-medium truncate" title={source.path}>{basename}</span>
-      </div>
-      <!-- One labeled strip per character with refs. The label carries the
-           character's palette dot so the row's strips line up visually
-           with the chip up top and the FrameThumb badges in the Frames
-           tab. The index is sourced from the project's full character
-           list (not the filtered `characters` derivation) so colors stay
-           consistent even when some characters are skipped for having
-           zero refs. -->
-      {#each characters as c (c.slug)}
-        {@const fullIdx = projectsStore.active?.characters.findIndex((x) => x.slug === c.slug) ?? 0}
-        {@const color = colorForIndex(fullIdx)}
-        {@const excluded = source.excluded_refs[c.slug] ?? []}
-        {@const activeCount = c.refs.length - excluded.length}
-        <div class="flex items-center gap-2 min-w-0 flex-wrap">
-          <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-400 min-w-[5.5rem]">
-            <span
-              class="w-2 h-2 rounded-full flex-shrink-0 {color.dot}"
-              aria-hidden="true"
-            ></span>
-            <span class="truncate" title={c.name}>{c.name}</span>
-            <span class="text-slate-500 tabular-nums text-[10px]">
-              {activeCount}/{c.refs.length}
-            </span>
-          </span>
-          <RefStrip
-            sourceIdx={sourceIdx}
-            characterSlug={c.slug}
-            refPaths={c.refs.map((r) => r.path)}
-            excluded={excluded}
-            activeRingRgba={color.ring}
-          />
-        </div>
-      {/each}
+  <!-- Center column: title + per-character ref strips. The active pipeline
+       (when a job is running or just finished) renders as its own row
+       below this grid so the 7-stage strip never has to share horizontal
+       space with the action buttons — that was where it would wrap and
+       visually overflow into the buttons column. -->
+  <div class="min-w-0 flex flex-col gap-1.5">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-sm text-slate-200 font-medium truncate" title={source.path}>{basename}</span>
     </div>
-    {#if job}
-      <PipelineRunner {job} />
-    {/if}
+    <!-- One labeled strip per character with refs. The label carries the
+         character's palette dot so the row's strips line up visually
+         with the chip up top and the FrameThumb badges in the Frames
+         tab. The index is sourced from the project's full character
+         list (not the filtered `characters` derivation) so colors stay
+         consistent even when some characters are skipped for having
+         zero refs. -->
+    {#each characters as c (c.slug)}
+      {@const fullIdx = projectsStore.active?.characters.findIndex((x) => x.slug === c.slug) ?? 0}
+      {@const color = colorForIndex(fullIdx)}
+      {@const excluded = source.excluded_refs[c.slug] ?? []}
+      {@const activeCount = c.refs.length - excluded.length}
+      <div class="flex items-center gap-2 min-w-0 flex-wrap">
+        <span class="inline-flex items-center gap-1.5 text-[11px] text-slate-400 min-w-[5.5rem]">
+          <span
+            class="w-2 h-2 rounded-full flex-shrink-0 {color.dot}"
+            aria-hidden="true"
+          ></span>
+          <span class="truncate" title={c.name}>{c.name}</span>
+          <span class="text-slate-500 tabular-nums text-[10px]">
+            {activeCount}/{c.refs.length}
+          </span>
+        </span>
+        <RefStrip
+          sourceIdx={sourceIdx}
+          characterSlug={c.slug}
+          refPaths={c.refs.map((r) => r.path)}
+          excluded={excluded}
+          activeRingRgba={color.ring}
+        />
+      </div>
+    {/each}
   </div>
 
   <div class="flex gap-1.5">
@@ -366,6 +366,16 @@
     title={pipelineActive ? "Pipeline running — wait for it to finish" : "Remove from project"}
     class="text-slate-600 hover:text-red-400 text-xs px-2 py-1 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-600"
   >✕</button>
+</div>
+
+{#if job}
+  <!-- Full-width pipeline strip. Lives on its own row so the 7-stage
+       progress box has room to lay out horizontally without bleeding
+       into the action buttons on narrower viewports. -->
+  <div class="min-w-0">
+    <PipelineRunner {job} />
+  </div>
+{/if}
 </div>
 
 {#if pendingAction}
