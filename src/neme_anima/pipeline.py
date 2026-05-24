@@ -49,6 +49,25 @@ def _flush_cuda_cache() -> None:
         pass
 
 
+def _release_pipeline_models(tagger: "Tagger | None") -> None:
+    """Drop heavy GPU references and force the allocator to give VRAM back.
+
+    Called from a ``finally`` in both pipeline entry points so a crash
+    in the middle of a run still releases the tagger session. The
+    detector/router are constructed inside their stages and go out of
+    scope on return — we just need to break the tagger reference and
+    flush the CUDA pool.
+    """
+    if tagger is not None:
+        try:
+            tagger.close()
+        except Exception:  # noqa: BLE001
+            pass
+    import gc
+    gc.collect()
+    _flush_cuda_cache()
+
+
 def _make_progress() -> Progress:
     return Progress(
         TextColumn("[bold blue]{task.description}"),
@@ -82,10 +101,14 @@ def _resolve_thresholds(project: Project) -> Thresholds:
 def run_extract(
     *, project: Project, source_idx: int,
     progress: PipelineProgress | None = None,
+    release_models: bool = True,
 ) -> None:
     progress = progress or NULL_PROGRESS
     try:
-        _run_extract_inner(project=project, source_idx=source_idx, progress=progress)
+        _run_extract_inner(
+            project=project, source_idx=source_idx, progress=progress,
+            release_models=release_models,
+        )
     except Exception as exc:
         progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
         raise
@@ -114,241 +137,250 @@ def _allowed_frame_ranges(
 
 
 def _run_extract_inner(
-    *, project: Project, source_idx: int, progress: PipelineProgress
+    *, project: Project, source_idx: int, progress: PipelineProgress,
+    release_models: bool,
 ) -> None:
-    progress.stage_start("setup", "Setup", message="Loading video and references")
-    thresholds = _resolve_thresholds(project)
-    source = project.sources[source_idx]
-    video_path = Path(source.path)
-    video_stem = project.video_stem(source_idx)
-    refs_by_slug = _refs_by_character(project, source_idx)
-    if not any(refs_by_slug.values()):
-        raise ValueError(
-            f"no character has effective references for {video_path.name}: "
-            "every character is either empty or fully opted-out"
-        )
-
-    writer = OutputWriter(project=project, video_stem=video_stem)
-    # Scoped wipe: clear only frames belonging to characters that are
-    # active in THIS run (those with at least one effective ref). Frames
-    # whose owning character has all refs opted-out for this source are
-    # preserved — the user's curation on those characters survives.
-    # Rejected samples always wipe regardless. The legacy "wipe
-    # everything" behaviour is recoverable by clearing per-character
-    # refs OR by deleting the files manually.
-    preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
-    wipe_report = _wipe_outputs_for_stem(
-        project, video_stem, preserve_owned_by=preserve_slugs,
-    )
-    console.rule(f"[bold]neme-anima[/bold] :: {video_path.name}")
-    total_refs = sum(len(v) for v in refs_by_slug.values())
-    active_chars = sum(1 for v in refs_by_slug.values() if v)
-    if wipe_report["preserved"]:
-        console.print(
-            f"preserved: {wipe_report['preserved']} frame"
-            f"{'s' if wipe_report['preserved'] != 1 else ''} from "
-            f"non-active character"
-            f"{'s' if len(preserve_slugs) != 1 else ''} "
-            f"({', '.join(sorted(preserve_slugs)) or 'none'})"
-        )
-    console.print(
-        f"refs: {total_refs} effective across {active_chars} "
-        f"character{'s' if active_chars != 1 else ''}"
-    )
-
-    vid = Video(video_path)
-    console.print(f"video: {vid.num_frames} frames @ {vid.fps:.2f} fps "
-                  f"({vid.duration_seconds:.1f} s)")
-    progress.stage_done(
-        "setup",
-        message=(
-            f"{vid.num_frames:,} frames @ {vid.fps:.1f} fps · "
-            f"{total_refs} ref{'s' if total_refs != 1 else ''} "
-            f"× {active_chars} char{'s' if active_chars != 1 else ''}"
-        ),
-    )
-
-    progress.stage_start("scenes", "Scene detection", message="Analysing shots")
-    # When the user has restricted this source to a set of time segments,
-    # hand the frame ranges to detect_scenes so PySceneDetect only scans
-    # those windows. ContentDetector is a purely local frame-to-frame
-    # algorithm, so per-window scans produce the same cuts as a whole-
-    # video scan clipped to the same windows — at a fraction of the
-    # wall-clock cost on a long source. ``None`` (no segments configured)
-    # keeps the legacy whole-video path byte-identical.
-    allowed_ranges = _allowed_frame_ranges(source, vid.fps)
-    scenes = detect_scenes(
-        video_path,
-        content_threshold=thresholds.scene.threshold,
-        min_scene_len_frames=thresholds.scene.min_scene_len_frames,
-        time_ranges=allowed_ranges,
-    )
-    if allowed_ranges is not None:
-        console.print(
-            f"segments: {len(source.segments)} time range(s) → "
-            f"{len(scenes)} scene(s)"
-        )
-        if not scenes:
+    _tagger_holder: list[Tagger] = []
+    try:
+        progress.stage_start("setup", "Setup", message="Loading video and references")
+        thresholds = _resolve_thresholds(project)
+        source = project.sources[source_idx]
+        video_path = Path(source.path)
+        video_stem = project.video_stem(source_idx)
+        refs_by_slug = _refs_by_character(project, source_idx)
+        if not any(refs_by_slug.values()):
             raise ValueError(
-                "configured segments do not overlap the video — every range "
-                "falls outside the video (or past its duration of "
-                f"{vid.duration_seconds:.1f}s)"
+                f"no character has effective references for {video_path.name}: "
+                "every character is either empty or fully opted-out"
             )
-    console.print(f"scenes: {len(scenes)}")
-    writer.write_scenes(scenes)
-    progress.stage_done("scenes", message=f"{len(scenes)} scene{'s' if len(scenes)!=1 else ''}")
 
-    router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
-    detector = Detector(
-        person_score_min=thresholds.detect.person_score_min,
-        face_score_min=thresholds.detect.face_score_min,
-    )
+        writer = OutputWriter(project=project, video_stem=video_stem)
+        # Scoped wipe: clear only frames belonging to characters that are
+        # active in THIS run (those with at least one effective ref). Frames
+        # whose owning character has all refs opted-out for this source are
+        # preserved — the user's curation on those characters survives.
+        # Rejected samples always wipe regardless. The legacy "wipe
+        # everything" behaviour is recoverable by clearing per-character
+        # refs OR by deleting the files manually.
+        preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
+        wipe_report = _wipe_outputs_for_stem(
+            project, video_stem, preserve_owned_by=preserve_slugs,
+        )
+        console.rule(f"[bold]neme-anima[/bold] :: {video_path.name}")
+        total_refs = sum(len(v) for v in refs_by_slug.values())
+        active_chars = sum(1 for v in refs_by_slug.values() if v)
+        if wipe_report["preserved"]:
+            console.print(
+                f"preserved: {wipe_report['preserved']} frame"
+                f"{'s' if wipe_report['preserved'] != 1 else ''} from "
+                f"non-active character"
+                f"{'s' if len(preserve_slugs) != 1 else ''} "
+                f"({', '.join(sorted(preserve_slugs)) or 'none'})"
+            )
+        console.print(
+            f"refs: {total_refs} effective across {active_chars} "
+            f"character{'s' if active_chars != 1 else ''}"
+        )
 
-    per_scene: dict[int, list[FrameDetections]] = defaultdict(list)
-    stride = max(1, thresholds.detect.frame_stride)
-    total_frames = sum(len(range(s.start_frame, s.end_frame, stride)) for s in scenes)
+        vid = Video(video_path)
+        console.print(f"video: {vid.num_frames} frames @ {vid.fps:.2f} fps "
+                      f"({vid.duration_seconds:.1f} s)")
+        progress.stage_done(
+            "setup",
+            message=(
+                f"{vid.num_frames:,} frames @ {vid.fps:.1f} fps · "
+                f"{total_refs} ref{'s' if total_refs != 1 else ''} "
+                f"× {active_chars} char{'s' if active_chars != 1 else ''}"
+            ),
+        )
 
-    progress.stage_start(
-        "detect", "Person detection",
-        total=total_frames,
-        message=f"0 / {total_frames:,} frames",
-    )
-    with _make_progress() as p:
-        task = p.add_task("detect", total=total_frames)
-        seen = 0
-        for scene in scenes:
-            for fi, frame in vid.iter_frames(
-                start=scene.start_frame, end=scene.end_frame, stride=stride
-            ):
-                fd = detector.detect_frame(fi, frame, with_faces=thresholds.detect.detect_faces)
-                per_scene[scene.index].append(fd)
-                p.advance(task)
-                seen += 1
-                progress.stage_advance("detect")
-    progress.stage_done("detect", message=f"{total_frames:,} frames scanned")
-
-    progress.stage_start("track", "Tracking", message="Building tracklets")
-    tracklets: list[Tracklet] = []
-    track_cfg = thresholds.track
-    track_cfg = type(track_cfg)(
-        track_thresh=track_cfg.track_thresh, match_thresh=track_cfg.match_thresh,
-        frame_rate=int(round(vid.fps)) or 30,
-        track_buffer=track_cfg.track_buffer, min_tracklet_len=track_cfg.min_tracklet_len,
-    )
-    for scene in scenes:
-        scene_dets = per_scene.get(scene.index, [])
-        if scene_dets:
-            tracklets.extend(track_scene(scene.index, scene_dets, track_cfg))
-    console.print(f"tracklets: {len(tracklets)}")
-    writer.write_tracklets(tracklets)
-    # Stamp the cache freshness snapshot AFTER the parquet writes so the
-    # state on disk is internally consistent — extraction_meta.json is
-    # written if and only if both scenes.parquet and tracklets.parquet
-    # are present and reflect the current scene/detect/track thresholds.
-    stamp_meta(project, video_stem, thresholds)
-    progress.stage_done("track", message=f"{len(tracklets)} tracklet{'s' if len(tracklets)!=1 else ''}")
-
-    progress.stage_start(
-        "identify", "Identify · select · save",
-        total=len(tracklets),
-        message=f"0 / {len(tracklets)} tracklets",
-    )
-    with _make_progress() as p:
-        task = p.add_task("identify+save", total=len(tracklets))
-        kept, rejected, skipped_collisions = 0, 0, 0
-        for tracklet in tracklets:
-            routed = router.route_tracklet(tracklet, vid)
-            if routed.character_slug is None:
-                _save_one_rejected_sample(
-                    writer, vid, tracklet, routed.score.median_distance,
-                    thresholds, video_stem,
+        progress.stage_start("scenes", "Scene detection", message="Analysing shots")
+        # When the user has restricted this source to a set of time segments,
+        # hand the frame ranges to detect_scenes so PySceneDetect only scans
+        # those windows. ContentDetector is a purely local frame-to-frame
+        # algorithm, so per-window scans produce the same cuts as a whole-
+        # video scan clipped to the same windows — at a fraction of the
+        # wall-clock cost on a long source. ``None`` (no segments configured)
+        # keeps the legacy whole-video path byte-identical.
+        allowed_ranges = _allowed_frame_ranges(source, vid.fps)
+        scenes = detect_scenes(
+            video_path,
+            content_threshold=thresholds.scene.threshold,
+            min_scene_len_frames=thresholds.scene.min_scene_len_frames,
+            time_ranges=allowed_ranges,
+        )
+        if allowed_ranges is not None:
+            console.print(
+                f"segments: {len(source.segments)} time range(s) → "
+                f"{len(scenes)} scene(s)"
+            )
+            if not scenes:
+                raise ValueError(
+                    "configured segments do not overlap the video — every range "
+                    "falls outside the video (or past its duration of "
+                    f"{vid.duration_seconds:.1f}s)"
                 )
-                rejected += 1
+        console.print(f"scenes: {len(scenes)}")
+        writer.write_scenes(scenes)
+        progress.stage_done("scenes", message=f"{len(scenes)} scene{'s' if len(scenes)!=1 else ''}")
+
+        router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
+        detector = Detector(
+            person_score_min=thresholds.detect.person_score_min,
+            face_score_min=thresholds.detect.face_score_min,
+        )
+
+        per_scene: dict[int, list[FrameDetections]] = defaultdict(list)
+        stride = max(1, thresholds.detect.frame_stride)
+        total_frames = sum(len(range(s.start_frame, s.end_frame, stride)) for s in scenes)
+
+        progress.stage_start(
+            "detect", "Person detection",
+            total=total_frames,
+            message=f"0 / {total_frames:,} frames",
+        )
+        with _make_progress() as p:
+            task = p.add_task("detect", total=total_frames)
+            seen = 0
+            for scene in scenes:
+                for fi, frame in vid.iter_frames(
+                    start=scene.start_frame, end=scene.end_frame, stride=stride
+                ):
+                    fd = detector.detect_frame(fi, frame, with_faces=thresholds.detect.detect_faces)
+                    per_scene[scene.index].append(fd)
+                    p.advance(task)
+                    seen += 1
+                    progress.stage_advance("detect")
+        progress.stage_done("detect", message=f"{total_frames:,} frames scanned")
+
+        progress.stage_start("track", "Tracking", message="Building tracklets")
+        tracklets: list[Tracklet] = []
+        track_cfg = thresholds.track
+        track_cfg = type(track_cfg)(
+            track_thresh=track_cfg.track_thresh, match_thresh=track_cfg.match_thresh,
+            frame_rate=int(round(vid.fps)) or 30,
+            track_buffer=track_cfg.track_buffer, min_tracklet_len=track_cfg.min_tracklet_len,
+        )
+        for scene in scenes:
+            scene_dets = per_scene.get(scene.index, [])
+            if scene_dets:
+                tracklets.extend(track_scene(scene.index, scene_dets, track_cfg))
+        console.print(f"tracklets: {len(tracklets)}")
+        writer.write_tracklets(tracklets)
+        # Stamp the cache freshness snapshot AFTER the parquet writes so the
+        # state on disk is internally consistent — extraction_meta.json is
+        # written if and only if both scenes.parquet and tracklets.parquet
+        # are present and reflect the current scene/detect/track thresholds.
+        stamp_meta(project, video_stem, thresholds)
+        progress.stage_done("track", message=f"{len(tracklets)} tracklet{'s' if len(tracklets)!=1 else ''}")
+
+        progress.stage_start(
+            "identify", "Identify · select · save",
+            total=len(tracklets),
+            message=f"0 / {len(tracklets)} tracklets",
+        )
+        with _make_progress() as p:
+            task = p.add_task("identify+save", total=len(tracklets))
+            kept, rejected, skipped_collisions = 0, 0, 0
+            for tracklet in tracklets:
+                routed = router.route_tracklet(tracklet, vid)
+                if routed.character_slug is None:
+                    _save_one_rejected_sample(
+                        writer, vid, tracklet, routed.score.median_distance,
+                        thresholds, video_stem,
+                    )
+                    rejected += 1
+                    p.advance(task)
+                    progress.stage_advance("identify")
+                    progress.stage_message(
+                        "identify",
+                        f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
+                    )
+                    continue
+                ref_features = router.reference_features(routed.character_slug)
+                picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
+                for pick in picks:
+                    target_filename = OutputWriter.filename_for(
+                        video_stem=video_stem, scene_idx=pick.scene_idx,
+                        tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
+                    )
+                    target_png = project.kept_dir / f"{target_filename}.png"
+                    # Collision guard: scoped wipe just deleted every file
+                    # belonging to an active character, so any file still at
+                    # this path must belong to a preserved (non-active)
+                    # character. Yield to the preserved owner — overwriting
+                    # would silently destroy curation that the user
+                    # explicitly chose to keep by opting their character out.
+                    if target_png.exists():
+                        skipped_collisions += 1
+                        continue
+                    frame = vid.get(pick.frame_idx)
+                    cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
+                    rec = FrameRecord(
+                        filename=target_filename,
+                        kept=True,
+                        scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
+                        frame_idx=pick.frame_idx,
+                        timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
+                        bbox=pick.detection_bbox,
+                        ccip_distance=pick.ccip_distance,
+                        sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
+                        score=pick.score, video_stem=video_stem,
+                        character_slug=routed.character_slug,
+                    )
+                    # Defer tagging — write the image with an empty .txt so the
+                    # user can review/delete kept frames before paying the
+                    # tagger cost on them.
+                    writer.write_kept_image(rec, cropped.image_rgb)
+                    kept += 1
                 p.advance(task)
                 progress.stage_advance("identify")
                 progress.stage_message(
                     "identify",
                     f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
                 )
-                continue
-            ref_features = router.reference_features(routed.character_slug)
-            picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
-            for pick in picks:
-                target_filename = OutputWriter.filename_for(
-                    video_stem=video_stem, scene_idx=pick.scene_idx,
-                    tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
-                )
-                target_png = project.kept_dir / f"{target_filename}.png"
-                # Collision guard: scoped wipe just deleted every file
-                # belonging to an active character, so any file still at
-                # this path must belong to a preserved (non-active)
-                # character. Yield to the preserved owner — overwriting
-                # would silently destroy curation that the user
-                # explicitly chose to keep by opting their character out.
-                if target_png.exists():
-                    skipped_collisions += 1
-                    continue
-                frame = vid.get(pick.frame_idx)
-                cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
-                rec = FrameRecord(
-                    filename=target_filename,
-                    kept=True,
-                    scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
-                    frame_idx=pick.frame_idx,
-                    timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
-                    bbox=pick.detection_bbox,
-                    ccip_distance=pick.ccip_distance,
-                    sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
-                    score=pick.score, video_stem=video_stem,
-                    character_slug=routed.character_slug,
-                )
-                # Defer tagging — write the image with an empty .txt so the
-                # user can review/delete kept frames before paying the
-                # tagger cost on them.
-                writer.write_kept_image(rec, cropped.image_rgb)
-                kept += 1
-            p.advance(task)
-            progress.stage_advance("identify")
-            progress.stage_message(
-                "identify",
-                f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
-            )
 
-    summary_msg = f"kept {kept} · rejected {rejected}"
-    if skipped_collisions:
-        summary_msg += f" · {skipped_collisions} preserved-owner collision(s) skipped"
-    progress.stage_done("identify", message=summary_msg)
+        summary_msg = f"kept {kept} · rejected {rejected}"
+        if skipped_collisions:
+            summary_msg += f" · {skipped_collisions} preserved-owner collision(s) skipped"
+        progress.stage_done("identify", message=summary_msg)
 
-    dedup_report = dedup_kept_for_video(
-        project=project, video_stem=video_stem,
-        cfg=thresholds.dedup, progress=progress,
-    )
+        dedup_report = dedup_kept_for_video(
+            project=project, video_stem=video_stem,
+            cfg=thresholds.dedup, progress=progress,
+        )
 
-    _run_tag_stage(
-        project=project, video_stem=video_stem, thresholds=thresholds,
-        progress=progress, pause=project.pause_before_tag,
-        preserve_owned_by=preserve_slugs,
-    )
+        _run_tag_stage(
+            project=project, video_stem=video_stem, thresholds=thresholds,
+            progress=progress, pause=project.pause_before_tag,
+            preserve_owned_by=preserve_slugs,
+            tagger_holder=_tagger_holder,
+        )
 
-    _maybe_delete_rejected_for_stem(project, video_stem)
+        _maybe_delete_rejected_for_stem(project, video_stem)
 
-    progress.finish({
-        "kept": kept - dedup_report.removed,
-        "rejected": rejected + dedup_report.removed,
-        "deduped": dedup_report.removed,
-    })
+        progress.finish({
+            "kept": kept - dedup_report.removed,
+            "rejected": rejected + dedup_report.removed,
+            "deduped": dedup_report.removed,
+        })
 
-    console.rule("[bold green]done[/bold green]")
-    console.print(
-        f"kept: {kept - dedup_report.removed}  rejected: {rejected + dedup_report.removed}"
-        f"  (dedup removed {dedup_report.removed})  output: {project.kept_dir}"
-    )
+        console.rule("[bold green]done[/bold green]")
+        console.print(
+            f"kept: {kept - dedup_report.removed}  rejected: {rejected + dedup_report.removed}"
+            f"  (dedup removed {dedup_report.removed})  output: {project.kept_dir}"
+        )
+    finally:
+        if release_models:
+            tagger = _tagger_holder[0] if _tagger_holder else None
+            _release_pipeline_models(tagger)
 
 
 def _run_tag_stage(
     *, project: Project, video_stem: str, thresholds: Thresholds,
     progress: PipelineProgress, pause: bool,
     preserve_owned_by: set[str] | None = None,
+    tagger_holder: list["Tagger"] | None = None,
 ) -> None:
     """Tag every kept frame currently on disk for ``video_stem``.
 
@@ -439,6 +471,8 @@ def _run_tag_stage(
         return
 
     tagger = Tagger(thresholds.tag)
+    if tagger_holder is not None:
+        tagger_holder.append(tagger)
     llm_active = bool(project.llm.enabled and project.llm.model)
     flush_every = thresholds.tag.vram_flush_every
 
@@ -721,145 +755,157 @@ def _preserve_set_from_refs_by_slug(
 def run_rerun(
     *, project: Project, video_stem: str,
     progress: PipelineProgress | None = None,
+    release_models: bool = True,
 ) -> None:
     progress = progress or NULL_PROGRESS
     try:
-        _run_rerun_inner(project=project, video_stem=video_stem, progress=progress)
+        _run_rerun_inner(
+            project=project, video_stem=video_stem, progress=progress,
+            release_models=release_models,
+        )
     except Exception as exc:
         progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
         raise
 
 
 def _run_rerun_inner(
-    *, project: Project, video_stem: str, progress: PipelineProgress
+    *, project: Project, video_stem: str, progress: PipelineProgress,
+    release_models: bool,
 ) -> None:
-    progress.stage_start("setup", "Setup", message="Loading cached tracklets")
-    thresholds = _resolve_thresholds(project)
-    # Find the source matching this video_stem.
-    source_idx = next(
-        (i for i, s in enumerate(project.sources) if Path(s.path).stem == video_stem),
-        None,
-    )
-    if source_idx is None:
-        raise ValueError(f"no source matches video_stem={video_stem!r}")
-    refs_by_slug = _refs_by_character(project, source_idx)
-    if not any(refs_by_slug.values()):
-        raise ValueError(
-            "no character has effective references — every character is "
-            "either empty or fully opted-out for this source"
+    _tagger_holder: list[Tagger] = []
+    try:
+        progress.stage_start("setup", "Setup", message="Loading cached tracklets")
+        thresholds = _resolve_thresholds(project)
+        # Find the source matching this video_stem.
+        source_idx = next(
+            (i for i, s in enumerate(project.sources) if Path(s.path).stem == video_stem),
+            None,
+        )
+        if source_idx is None:
+            raise ValueError(f"no source matches video_stem={video_stem!r}")
+        refs_by_slug = _refs_by_character(project, source_idx)
+        if not any(refs_by_slug.values()):
+            raise ValueError(
+                "no character has effective references — every character is "
+                "either empty or fully opted-out for this source"
+            )
+
+        writer = OutputWriter(project=project, video_stem=video_stem)
+        tracklets = writer.read_tracklets()
+        console.print(f"cached tracklets: {len(tracklets)}")
+
+        vid = Video(Path(project.sources[source_idx].path))
+        router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
+
+        # Same scoped-wipe semantics as Extract: preserve frames belonging
+        # to non-active characters. Re-process is the iteration loop, so the
+        # preservation matters even more — a user typing in a new ref for
+        # one character shouldn't risk obliterating a sibling character's
+        # curated work.
+        preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
+        wipe_report = _wipe_outputs_for_stem(
+            project, video_stem, preserve_owned_by=preserve_slugs,
+        )
+        if wipe_report["preserved"]:
+            console.print(
+                f"preserved: {wipe_report['preserved']} frame"
+                f"{'s' if wipe_report['preserved'] != 1 else ''} from "
+                f"non-active character"
+                f"{'s' if len(preserve_slugs) != 1 else ''} "
+                f"({', '.join(sorted(preserve_slugs)) or 'none'})"
+            )
+        progress.stage_done(
+            "setup",
+            message=f"{len(tracklets)} cached tracklet{'s' if len(tracklets)!=1 else ''}",
         )
 
-    writer = OutputWriter(project=project, video_stem=video_stem)
-    tracklets = writer.read_tracklets()
-    console.print(f"cached tracklets: {len(tracklets)}")
-
-    vid = Video(Path(project.sources[source_idx].path))
-    router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
-
-    # Same scoped-wipe semantics as Extract: preserve frames belonging
-    # to non-active characters. Re-process is the iteration loop, so the
-    # preservation matters even more — a user typing in a new ref for
-    # one character shouldn't risk obliterating a sibling character's
-    # curated work.
-    preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
-    wipe_report = _wipe_outputs_for_stem(
-        project, video_stem, preserve_owned_by=preserve_slugs,
-    )
-    if wipe_report["preserved"]:
-        console.print(
-            f"preserved: {wipe_report['preserved']} frame"
-            f"{'s' if wipe_report['preserved'] != 1 else ''} from "
-            f"non-active character"
-            f"{'s' if len(preserve_slugs) != 1 else ''} "
-            f"({', '.join(sorted(preserve_slugs)) or 'none'})"
+        progress.stage_start(
+            "identify", "Identify · select · save",
+            total=len(tracklets),
+            message=f"0 / {len(tracklets)} tracklets",
         )
-    progress.stage_done(
-        "setup",
-        message=f"{len(tracklets)} cached tracklet{'s' if len(tracklets)!=1 else ''}",
-    )
-
-    progress.stage_start(
-        "identify", "Identify · select · save",
-        total=len(tracklets),
-        message=f"0 / {len(tracklets)} tracklets",
-    )
-    with _make_progress() as p:
-        task = p.add_task("rerun", total=len(tracklets))
-        kept, rejected, skipped_collisions = 0, 0, 0
-        for tracklet in tracklets:
-            routed = router.route_tracklet(tracklet, vid)
-            if routed.character_slug is None:
-                _save_one_rejected_sample(
-                    writer, vid, tracklet, routed.score.median_distance,
-                    thresholds, video_stem,
-                )
-                rejected += 1
+        with _make_progress() as p:
+            task = p.add_task("rerun", total=len(tracklets))
+            kept, rejected, skipped_collisions = 0, 0, 0
+            for tracklet in tracklets:
+                routed = router.route_tracklet(tracklet, vid)
+                if routed.character_slug is None:
+                    _save_one_rejected_sample(
+                        writer, vid, tracklet, routed.score.median_distance,
+                        thresholds, video_stem,
+                    )
+                    rejected += 1
+                    p.advance(task)
+                    progress.stage_advance("identify")
+                    progress.stage_message(
+                        "identify",
+                        f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
+                    )
+                    continue
+                ref_features = router.reference_features(routed.character_slug)
+                picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
+                for pick in picks:
+                    target_filename = OutputWriter.filename_for(
+                        video_stem=video_stem, scene_idx=pick.scene_idx,
+                        tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
+                    )
+                    target_png = project.kept_dir / f"{target_filename}.png"
+                    # Same collision guard as Extract — yield to a preserved
+                    # frame at the same path. Re-process with an unchanged
+                    # detection cache means filenames are MORE likely to
+                    # collide than in Extract (tracklet IDs are stable), so
+                    # this guard fires more often here.
+                    if target_png.exists():
+                        skipped_collisions += 1
+                        continue
+                    frame = vid.get(pick.frame_idx)
+                    cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
+                    rec = FrameRecord(
+                        filename=target_filename,
+                        kept=True,
+                        scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
+                        frame_idx=pick.frame_idx,
+                        timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
+                        bbox=pick.detection_bbox,
+                        ccip_distance=pick.ccip_distance,
+                        sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
+                        score=pick.score, video_stem=video_stem,
+                        character_slug=routed.character_slug,
+                    )
+                    writer.write_kept_image(rec, cropped.image_rgb)
+                    kept += 1
                 p.advance(task)
                 progress.stage_advance("identify")
                 progress.stage_message(
                     "identify",
                     f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
                 )
-                continue
-            ref_features = router.reference_features(routed.character_slug)
-            picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
-            for pick in picks:
-                target_filename = OutputWriter.filename_for(
-                    video_stem=video_stem, scene_idx=pick.scene_idx,
-                    tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
-                )
-                target_png = project.kept_dir / f"{target_filename}.png"
-                # Same collision guard as Extract — yield to a preserved
-                # frame at the same path. Re-process with an unchanged
-                # detection cache means filenames are MORE likely to
-                # collide than in Extract (tracklet IDs are stable), so
-                # this guard fires more often here.
-                if target_png.exists():
-                    skipped_collisions += 1
-                    continue
-                frame = vid.get(pick.frame_idx)
-                cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
-                rec = FrameRecord(
-                    filename=target_filename,
-                    kept=True,
-                    scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
-                    frame_idx=pick.frame_idx,
-                    timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
-                    bbox=pick.detection_bbox,
-                    ccip_distance=pick.ccip_distance,
-                    sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
-                    score=pick.score, video_stem=video_stem,
-                    character_slug=routed.character_slug,
-                )
-                writer.write_kept_image(rec, cropped.image_rgb)
-                kept += 1
-            p.advance(task)
-            progress.stage_advance("identify")
-            progress.stage_message(
-                "identify",
-                f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
-            )
-    summary_msg = f"kept {kept} · rejected {rejected}"
-    if skipped_collisions:
-        summary_msg += f" · {skipped_collisions} preserved-owner collision(s) skipped"
-    progress.stage_done("identify", message=summary_msg)
+        summary_msg = f"kept {kept} · rejected {rejected}"
+        if skipped_collisions:
+            summary_msg += f" · {skipped_collisions} preserved-owner collision(s) skipped"
+        progress.stage_done("identify", message=summary_msg)
 
-    dedup_report = dedup_kept_for_video(
-        project=project, video_stem=video_stem,
-        cfg=thresholds.dedup, progress=progress,
-    )
+        dedup_report = dedup_kept_for_video(
+            project=project, video_stem=video_stem,
+            cfg=thresholds.dedup, progress=progress,
+        )
 
-    _run_tag_stage(
-        project=project, video_stem=video_stem, thresholds=thresholds,
-        progress=progress, pause=project.pause_before_tag,
-        preserve_owned_by=preserve_slugs,
-    )
+        _run_tag_stage(
+            project=project, video_stem=video_stem, thresholds=thresholds,
+            progress=progress, pause=project.pause_before_tag,
+            preserve_owned_by=preserve_slugs,
+            tagger_holder=_tagger_holder,
+        )
 
-    _maybe_delete_rejected_for_stem(project, video_stem)
+        _maybe_delete_rejected_for_stem(project, video_stem)
 
-    progress.finish({
-        "kept": kept - dedup_report.removed,
-        "rejected": rejected + dedup_report.removed,
-        "deduped": dedup_report.removed,
-    })
-    console.rule("[bold green]rerun done[/bold green]")
+        progress.finish({
+            "kept": kept - dedup_report.removed,
+            "rejected": rejected + dedup_report.removed,
+            "deduped": dedup_report.removed,
+        })
+        console.rule("[bold green]rerun done[/bold green]")
+    finally:
+        if release_models:
+            tagger = _tagger_holder[0] if _tagger_holder else None
+            _release_pipeline_models(tagger)
