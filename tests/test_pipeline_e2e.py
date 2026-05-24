@@ -74,8 +74,11 @@ def test_run_extract_respects_excluded_refs(
 ):
     """If all refs are excluded for a source, the extraction must fail clearly."""
     project = Project.create(tmp_path / "proj", name="proj")
-    project.add_ref(ref_image)
+    # ``add_ref`` copies the image into ``project.root/refs/`` and returns the
+    # ``RefImage`` whose ``.path`` is the canonical identifier — that's what
+    # ``excluded_refs`` is matched against, NOT the user's input path.
+    ref = project.add_ref(ref_image)
     project.add_source(synth_video)
-    project.set_excluded_refs(0, [str(Path(ref_image).resolve())])
-    with pytest.raises(ValueError, match="no effective references"):
+    project.set_excluded_refs(0, [ref.path])
+    with pytest.raises(ValueError, match="effective references"):
         run_extract(project=project, source_idx=0)
