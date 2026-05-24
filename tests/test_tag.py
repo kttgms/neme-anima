@@ -90,15 +90,6 @@ def test_join_sidecar_strips_blank_tags_and_whitespace():
     assert text == "1girl, smile, blue_hair\n"
 
 
-def test_tagger_close_is_idempotent_and_does_not_raise():
-    """``close()`` must be safe to call before tagging (no session yet)
-    AND repeatedly after tagging — the pipeline's try/finally fires it
-    regardless of whether the run reached the tag stage."""
-    tagger = Tagger(TagConfig())
-    tagger.close()  # before first tag()
-    tagger.close()  # repeated
-
-
 @pytest.mark.gpu
 def test_tag_runs_end_to_end(tmp_path: Path):
     """Triggers a one-time WD14 weights download and runs on a noise image.

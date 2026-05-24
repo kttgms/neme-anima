@@ -49,20 +49,47 @@ def _flush_cuda_cache() -> None:
         pass
 
 
-def _release_pipeline_models(tagger: "Tagger | None") -> None:
+_IMGUTILS_LRU_CACHES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # WD14 tagger: ONNX session for the chosen model (e.g. EVA02_Large ~1.5 GB).
+    ("imgutils.tagging.wd14", ("_get_wd14_model",)),
+    # Person + face YOLOv8 detectors share one cache keyed by repo_id.
+    ("imgutils.generic.yolo", ("_open_models_for_repo_id",)),
+    # CCIP feat + metric sessions used by identify (router) and dedup.
+    ("imgutils.metrics.ccip", (
+        "_open_feat_model", "_open_metric_model",
+        "_open_metrics", "_open_cluster_metrics",
+    )),
+)
+
+
+def _release_pipeline_models() -> None:
     """Drop heavy GPU references and force the allocator to give VRAM back.
 
     Called from a ``finally`` in both pipeline entry points so a crash
-    in the middle of a run still releases the tagger session. The
-    detector/router are constructed inside their stages and go out of
-    scope on return — we just need to break the tagger reference and
-    flush the CUDA pool.
+    in the middle of a run still releases the model sessions. Each
+    GPU-using imgutils subsystem (WD14, YOLO, CCIP) lazy-loads its ONNX
+    ``InferenceSession`` into a module-level ``ts_lru_cache``. Dropping
+    a ``Detector`` / ``Router`` / ``Tagger`` wrapper does NOT release
+    those sessions — the lru_cache pins them for the life of the
+    process. ``cache_clear()`` is the only path that breaks the
+    reference, and ``gc.collect()`` then has to fire to actually run
+    the ONNX destructors that release device memory. The CUDA flush at
+    the end is just for PyTorch's pool (ONNX has its own).
     """
-    if tagger is not None:
+    import importlib
+    for module_path, fn_names in _IMGUTILS_LRU_CACHES:
         try:
-            tagger.close()
+            mod = importlib.import_module(module_path)
         except Exception:  # noqa: BLE001
-            pass
+            continue
+        for fn_name in fn_names:
+            fn = getattr(mod, fn_name, None)
+            clear = getattr(fn, "cache_clear", None)
+            if callable(clear):
+                try:
+                    clear()
+                except Exception:  # noqa: BLE001
+                    pass
     import gc
     gc.collect()
     _flush_cuda_cache()
@@ -140,7 +167,6 @@ def _run_extract_inner(
     *, project: Project, source_idx: int, progress: PipelineProgress,
     release_models: bool,
 ) -> None:
-    _tagger_holder: list[Tagger] = []
     try:
         progress.stage_start("setup", "Setup", message="Loading video and references")
         thresholds = _resolve_thresholds(project)
@@ -354,7 +380,6 @@ def _run_extract_inner(
             project=project, video_stem=video_stem, thresholds=thresholds,
             progress=progress, pause=project.pause_before_tag,
             preserve_owned_by=preserve_slugs,
-            tagger_holder=_tagger_holder,
         )
 
         _maybe_delete_rejected_for_stem(project, video_stem)
@@ -372,15 +397,13 @@ def _run_extract_inner(
         )
     finally:
         if release_models:
-            tagger = _tagger_holder[0] if _tagger_holder else None
-            _release_pipeline_models(tagger)
+            _release_pipeline_models()
 
 
 def _run_tag_stage(
     *, project: Project, video_stem: str, thresholds: Thresholds,
     progress: PipelineProgress, pause: bool,
     preserve_owned_by: set[str] | None = None,
-    tagger_holder: list["Tagger"] | None = None,
 ) -> None:
     """Tag every kept frame currently on disk for ``video_stem``.
 
@@ -471,8 +494,6 @@ def _run_tag_stage(
         return
 
     tagger = Tagger(thresholds.tag)
-    if tagger_holder is not None:
-        tagger_holder.append(tagger)
     llm_active = bool(project.llm.enabled and project.llm.model)
     flush_every = thresholds.tag.vram_flush_every
 
@@ -772,7 +793,6 @@ def _run_rerun_inner(
     *, project: Project, video_stem: str, progress: PipelineProgress,
     release_models: bool,
 ) -> None:
-    _tagger_holder: list[Tagger] = []
     try:
         progress.stage_start("setup", "Setup", message="Loading cached tracklets")
         thresholds = _resolve_thresholds(project)
@@ -894,7 +914,6 @@ def _run_rerun_inner(
             project=project, video_stem=video_stem, thresholds=thresholds,
             progress=progress, pause=project.pause_before_tag,
             preserve_owned_by=preserve_slugs,
-            tagger_holder=_tagger_holder,
         )
 
         _maybe_delete_rejected_for_stem(project, video_stem)
@@ -907,5 +926,4 @@ def _run_rerun_inner(
         console.rule("[bold green]rerun done[/bold green]")
     finally:
         if release_models:
-            tagger = _tagger_holder[0] if _tagger_holder else None
-            _release_pipeline_models(tagger)
+            _release_pipeline_models()

@@ -45,38 +45,6 @@ class Tagger:
         text = self._compose_text(general, character)
         return TagResult(rating=rating, general=general, character=character, text=text)
 
-    def close(self) -> None:
-        """Best-effort release of the underlying WD14 ONNX session.
-
-        ``imgutils.tagging`` lazy-loads models into a module-level cache
-        on first ``get_wd14_tags`` call and never releases them. Without
-        an unload step, the ONNX CUDA arena holds VRAM after the
-        pipeline returns. Try the cleanest hook the library offers
-        (``unload_model`` if present), then fall back to popping the
-        internal cache dict by model name. Either way, swallow errors —
-        the pipeline's ``torch.cuda.empty_cache()`` still recovers most
-        of the VRAM if this no-ops.
-        """
-        try:
-            from imgutils.tagging import wd14 as _wd14
-        except Exception:
-            return
-        unload = getattr(_wd14, "unload_model", None)
-        if callable(unload):
-            try:
-                unload(self.cfg.model_name)
-                return
-            except Exception:
-                pass
-        # Fallback: pop the known cache keys directly. Library internals
-        # vary by version — best-effort, no hard requirement.
-        for cache_name in (
-            "_WD14_MODELS", "_WD14_CACHE", "_MODEL_CACHE", "_TAGGER_MODELS",
-        ):
-            cache = getattr(_wd14, cache_name, None)
-            if isinstance(cache, dict):
-                cache.pop(self.cfg.model_name, None)
-
     def _compose_text(
         self,
         general: dict[str, float],
