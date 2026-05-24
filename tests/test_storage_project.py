@@ -198,3 +198,16 @@ def test_effective_refs_paths_helpers(tmp_path: Path):
     assert p.rejected_dir == p.root / "output" / "rejected"
     assert p.cache_dir_for("ep01") == p.root / "output" / "cache" / "ep01"
     assert p.metadata_path == p.root / "output" / "metadata.jsonl"
+
+
+def test_auto_delete_rejected_defaults_off_and_round_trips(tmp_path):
+    from neme_anima.storage.project import Project
+
+    p = Project.create(tmp_path / "p", name="p")
+    assert p.auto_delete_rejected is False  # default
+
+    p.auto_delete_rejected = True
+    p.save()
+
+    reloaded = Project.load(tmp_path / "p")
+    assert reloaded.auto_delete_rejected is True

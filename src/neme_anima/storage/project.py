@@ -301,6 +301,11 @@ class Project:
     # user a chance to delete unwanted frames so they don't pay the tagging
     # cost on them. False = tag inline like the original pipeline.
     pause_before_tag: bool = True
+    # When True, the pipeline deletes every file in ``output/rejected/``
+    # matching the current ``<video_stem>__*`` prefix after each video
+    # finishes. Off by default so users can audit rejections; flip on
+    # once you trust the matching thresholds.
+    auto_delete_rejected: bool = False
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     # ---------------- factory methods ----------------
@@ -347,6 +352,7 @@ class Project:
             thresholds_overrides=data.get("thresholds_overrides", {}),
             source_root=data.get("source_root"),
             pause_before_tag=bool(data.get("pause_before_tag", True)),
+            auto_delete_rejected=bool(data.get("auto_delete_rejected", False)),
             llm=LLMConfig(
                 enabled=bool(llm_raw.get("enabled", False)),
                 endpoint=str(llm_raw.get("endpoint") or "http://localhost:1234"),
@@ -464,6 +470,7 @@ class Project:
             "thresholds_overrides": self.thresholds_overrides,
             "source_root": self.source_root,
             "pause_before_tag": self.pause_before_tag,
+            "auto_delete_rejected": self.auto_delete_rejected,
             "llm": asdict(self.llm),
         }
         tmp = self.root / "project.json.tmp"
