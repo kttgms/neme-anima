@@ -45,6 +45,12 @@ class ProjectsStore {
     this.active = null;
   }
 
+  async delete(slug: string) {
+    await api.deleteProject(slug, true);
+    if (this.active?.slug === slug) this.active = null;
+    await this.refresh();
+  }
+
   /** Pick a sensible active character after a project (re)loads.
    *
    *  Keeps the existing selection when it's still valid, so a refresh
