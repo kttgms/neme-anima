@@ -330,6 +330,8 @@ def _run_extract_inner(
         preserve_owned_by=preserve_slugs,
     )
 
+    _maybe_delete_rejected_for_stem(project, video_stem)
+
     progress.finish({
         "kept": kept - dedup_report.removed,
         "rejected": rejected + dedup_report.removed,
@@ -583,6 +585,33 @@ def _kept_frame_owners(project: Project, video_stem: str) -> dict[str, str]:
     return latest_kept
 
 
+def _maybe_delete_rejected_for_stem(project: Project, video_stem: str) -> int:
+    """If ``project.auto_delete_rejected`` is on, delete every file in
+    ``project.rejected_dir`` whose name starts with ``<video_stem>__``.
+
+    Returns the number of files deleted (0 when the flag is off, the dir
+    is missing, or nothing matched). Errors on individual unlinks are
+    silently swallowed — the toggle is a convenience, not a guarantee,
+    and we'd rather leave a stray file than fail the run.
+    """
+    if not getattr(project, "auto_delete_rejected", False):
+        return 0
+    rejected = project.rejected_dir
+    if not rejected.exists():
+        return 0
+    prefix = f"{video_stem}__"
+    deleted = 0
+    for f in rejected.iterdir():
+        if not f.is_file() or not f.name.startswith(prefix):
+            continue
+        try:
+            f.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    return deleted
+
+
 def _wipe_outputs_for_stem(
     project: Project, video_stem: str,
     *, preserve_owned_by: set[str] | None = None,
@@ -825,6 +854,8 @@ def _run_rerun_inner(
         progress=progress, pause=project.pause_before_tag,
         preserve_owned_by=preserve_slugs,
     )
+
+    _maybe_delete_rejected_for_stem(project, video_stem)
 
     progress.finish({
         "kept": kept - dedup_report.removed,
