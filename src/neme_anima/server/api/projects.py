@@ -37,6 +37,7 @@ class PatchProjectBody(BaseModel):
     name: str | None = None
     thresholds_overrides: dict | None = None
     pause_before_tag: bool | None = None
+    auto_delete_rejected: bool | None = None
     llm: LLMConfigBody | None = None
 
 
@@ -108,6 +109,7 @@ def _project_view(project: Project) -> dict:
         "thresholds_overrides": project.thresholds_overrides,
         "source_root": project.source_root,
         "pause_before_tag": project.pause_before_tag,
+        "auto_delete_rejected": project.auto_delete_rejected,
         "llm": asdict(project.llm),
     }
 
@@ -210,6 +212,8 @@ async def patch_project(request: Request, slug: str, body: PatchProjectBody) -> 
         project.thresholds_overrides = body.thresholds_overrides
     if body.pause_before_tag is not None:
         project.pause_before_tag = body.pause_before_tag
+    if body.auto_delete_rejected is not None:
+        project.auto_delete_rejected = body.auto_delete_rejected
     if body.llm is not None:
         if body.llm.enabled is not None:
             project.llm.enabled = body.llm.enabled

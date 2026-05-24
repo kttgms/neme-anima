@@ -213,3 +213,23 @@ async def test_delete_project_with_files(client, tmp_path: Path):
     resp = await client.request("DELETE", "/api/projects/p", json={"delete_files": True})
     assert resp.status_code == 204
     assert not (tmp_path / "p").exists()
+
+
+async def test_patch_auto_delete_rejected_roundtrips(client, tmp_path: Path):
+    Project.create(tmp_path / "p", name="p")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+
+    # Default-off surfaces in the view.
+    body = (await client.get("/api/projects/p")).json()
+    assert body["auto_delete_rejected"] is False
+
+    # PATCH true and confirm it persists.
+    resp = await client.patch(
+        "/api/projects/p", json={"auto_delete_rejected": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["auto_delete_rejected"] is True
+
+    # Re-fetch to confirm it survived the round trip.
+    body = (await client.get("/api/projects/p")).json()
+    assert body["auto_delete_rejected"] is True
