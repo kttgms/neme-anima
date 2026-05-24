@@ -49,7 +49,7 @@ bash install_and_run.sh
 
 The script installs `uv` and Node.js if they aren't already on the system, syncs the Python deps, builds the frontend, clones `tdrussell/diffusion-pipe` into `~/diffusion-pipe` and sets up its Python 3.12 venv, downloads the three Anima training weights (~14 GB) from HuggingFace, prefills the four trainer paths in the UI's Settings tab, and starts the server.
 
-Re-running it is safe (will skip anything already in place).
+Re-running it is safe (will skip anything already in place). To update an existing one-click install, run `git pull --ff-only` and then run `bash install_and_run.sh` again; the script rebuilds the web UI.
 
 Useful environment overrides:
 
@@ -63,7 +63,7 @@ Useful environment overrides:
 
 Linux / WSL2 only. On Linux, Node.js is installed through apt (with sudo) when available, and through nvm otherwise.
 
-## Manual install
+## Manual install / After updating
 
 ```sh
 uv sync --group gpu
@@ -102,11 +102,13 @@ uv run neme-anima project rerun ~/neme-projects/megumin --video ep01
 
 ## Web UI
 
-After cloning the repository:
+After cloning the repository, or after `git pull` when updating, install/update the frontend dependencies and rebuild the static UI bundle:
 
 ```sh
 cd frontend && npm install && npm run build && cd ..
 ```
+
+`git pull` alone can leave you running the old UI because the built files in `src/neme_anima/server/static/` are generated locally and not committed.
 
 Then start the server:
 
