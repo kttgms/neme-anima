@@ -50,6 +50,7 @@ export const patchProject = (
     name?: string;
     thresholds_overrides?: Record<string, Record<string, unknown>>;
     pause_before_tag?: boolean;
+    auto_delete_rejected?: boolean;
     llm?: Partial<LLMConfig>;
   },
 ) => request<ProjectView>(`/api/projects/${encodeURIComponent(slug)}`, {

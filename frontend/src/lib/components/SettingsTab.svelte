@@ -125,6 +125,13 @@
     pauseBeforeTag = projectsStore.active?.pause_before_tag ?? true;
   });
 
+  let autoDeleteRejected = $state<boolean>(
+    projectsStore.active?.auto_delete_rejected ?? false,
+  );
+  $effect(() => {
+    autoDeleteRejected = projectsStore.active?.auto_delete_rejected ?? false;
+  });
+
   let blacklistTags = $derived<string[]>(
     (overrides.tag?.exclude_tags as string[] | undefined) ?? [],
   );
@@ -231,6 +238,7 @@
       await api.patchProject(slug, {
         thresholds_overrides: overrides,
         pause_before_tag: pauseBeforeTag,
+        auto_delete_rejected: autoDeleteRejected,
         llm: {
           // Force disabled if no model selected — server-side has the same
           // guard but enforcing it here keeps the saved state self-consistent.
@@ -295,6 +303,21 @@
           delete unwanted ones before they're tagged. Click the yellow
           ⏸ pill on a running pipeline to resume tagging. Off = the
           pipeline tags inline as it runs.
+        </span>
+      </span>
+    </label>
+    <label class="flex items-start gap-3 cursor-pointer mt-3">
+      <input
+        type="checkbox"
+        bind:checked={autoDeleteRejected}
+        class="mt-0.5 w-4 h-4 rounded bg-ink-950 border-ink-700 accent-accent-500"
+      />
+      <span class="flex-1">
+        <span class="block text-sm text-slate-200">Auto-delete rejected frames</span>
+        <span class="block text-xs text-slate-500 mt-0.5">
+          Frames that didn't match any character are deleted instead of saved
+          to <code>output/rejected/</code>. Useful once you trust the matching
+          thresholds; off by default so you can audit rejections.
         </span>
       </span>
     </label>

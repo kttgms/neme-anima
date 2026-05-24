@@ -84,6 +84,7 @@ export interface ProjectView {
   thresholds_overrides: Record<string, Record<string, unknown>>;
   source_root: string | null;
   pause_before_tag: boolean;
+  auto_delete_rejected: boolean;
   llm: LLMConfig;
 }
 
