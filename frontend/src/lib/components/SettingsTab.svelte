@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import TagBlacklistInput from "$lib/components/TagBlacklistInput.svelte";
 
   // Mirror of llm.DEFAULT_PROMPT in the backend. Kept here so the textarea
   // can pre-fill with the actual prompt instead of an empty placeholder —
@@ -123,6 +124,25 @@
   $effect(() => {
     pauseBeforeTag = projectsStore.active?.pause_before_tag ?? true;
   });
+
+  let blacklistTags = $derived<string[]>(
+    (overrides.tag?.exclude_tags as string[] | undefined) ?? [],
+  );
+
+  function setBlacklist(next: string[]) {
+    if (next.length === 0) {
+      if (overrides.tag) {
+        delete (overrides.tag as Record<string, unknown>).exclude_tags;
+        if (Object.keys(overrides.tag).length === 0) delete overrides.tag;
+      }
+      overrides = { ...overrides };
+      return;
+    }
+    overrides = {
+      ...overrides,
+      tag: { ...(overrides.tag ?? {}), exclude_tags: next },
+    };
+  }
 
   // ---------------- LLM tagging ----------------
 
@@ -278,6 +298,15 @@
         </span>
       </span>
     </label>
+    <div class="mt-4">
+      <span class="block text-sm text-slate-200 mb-1">Blacklist tags</span>
+      <span class="block text-xs text-slate-500 mb-2">
+        WD14 tags listed here are stripped from every caption written by
+        future tagging runs. Existing <code>.txt</code> sidecars are
+        untouched. Press Enter or comma after each tag.
+      </span>
+      <TagBlacklistInput tags={blacklistTags} ontagsChange={setBlacklist} />
+    </div>
   </div>
 
   <div class="bg-ink-900 border border-ink-700 rounded-xl p-4 mb-3">
