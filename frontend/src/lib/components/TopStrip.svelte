@@ -8,8 +8,12 @@
   import QueuePill from "./QueuePill.svelte";
   import ViewTabs from "./ViewTabs.svelte";
 
-  type Props = { onopenRegex: () => void; onopenCreate: () => void };
-  const { onopenRegex, onopenCreate }: Props = $props();
+  type Props = {
+    onopenRegex: () => void;
+    onopenCreate: () => void;
+    onopenDelete: () => void;
+  };
+  const { onopenRegex, onopenCreate, onopenDelete }: Props = $props();
 
   // Character filter chips appear in the top bar (next to project pills)
   // when the user is on the Frames tab and the project has more than one
@@ -44,7 +48,7 @@
          the row gets tight. -->
     <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
       <div class="w-5 h-5 rounded-full gradient-accent shadow-[0_0_12px_rgba(129,140,248,0.4)] flex-shrink-0"></div>
-      <ProjectPills {onopenCreate} />
+      <ProjectPills {onopenCreate} {onopenDelete} />
       {#if showCharacterFilter}
         <!-- Small left padding (pl-2) separates the filter chips from the
              project pills' "+" button. The strip itself wraps internally

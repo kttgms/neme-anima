@@ -34,18 +34,19 @@
 </script>
 
 <div
-  class="fixed inset-0 z-50 flex items-center justify-center
+  class="fixed inset-0 z-50 overflow-y-auto
          bg-ink-950/70 backdrop-blur-sm"
   role="presentation"
   onclick={oncancel}
   onkeydown={(e) => { if (e.key === "Escape") oncancel(); }}
 >
+  <div class="flex min-h-full items-center justify-center p-4">
   <div
     role="dialog"
     aria-modal="true"
     aria-labelledby="delete-project-title"
     class="bg-ink-900 border border-ink-700 rounded-xl shadow-2xl
-           p-5 max-w-md w-full mx-4"
+           p-5 max-w-md w-full"
     onclick={(e) => e.stopPropagation()}
     onkeydown={(e) => e.stopPropagation()}
   >
@@ -100,5 +101,6 @@
                shadow-[0_2px_8px_rgba(220,38,38,0.3)]"
       >Delete project + files</button>
     </div>
+  </div>
   </div>
 </div>

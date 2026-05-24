@@ -11,6 +11,7 @@
   import FramesTab from "$lib/components/FramesTab.svelte";
   import RegexModal from "$lib/components/RegexModal.svelte";
   import CreateProjectModal from "$lib/components/CreateProjectModal.svelte";
+  import DeleteProjectModal from "$lib/components/DeleteProjectModal.svelte";
   import SourcesTab from "$lib/components/SourcesTab.svelte";
   import SettingsTab from "$lib/components/SettingsTab.svelte";
   import TrainingTab from "$lib/components/TrainingTab.svelte";
@@ -18,6 +19,17 @@
   let conn: Connection | null = null;
   let regexOpen = $state(false);
   let createOpen = $state(false);
+  // Modal lives at the App root, not inside ProjectPills — the top bar
+  // uses backdrop-blur which creates a CSS containing block for
+  // position:fixed descendants, clipping any modal mounted under it.
+  let deleteProjectOpen = $state(false);
+
+  async function confirmDeleteActiveProject() {
+    const slug = projectsStore.active?.slug;
+    if (!slug) return;
+    await projectsStore.delete(slug);
+    deleteProjectOpen = false;
+  }
 
   onMount(async () => {
     await projectsStore.refresh();
@@ -60,7 +72,11 @@
 </script>
 
 <div class="min-h-screen bg-ink-950 text-slate-100">
-  <TopStrip onopenRegex={() => (regexOpen = true)} onopenCreate={() => (createOpen = true)} />
+  <TopStrip
+    onopenRegex={() => (regexOpen = true)}
+    onopenCreate={() => (createOpen = true)}
+    onopenDelete={() => (deleteProjectOpen = true)}
+  />
   <main class="px-4 pb-12">
     {#if projectsStore.active}
       {#if viewStore.tab === "sources"}
@@ -85,5 +101,12 @@
   {/if}
   {#if createOpen}
     <CreateProjectModal onclose={() => (createOpen = false)} />
+  {/if}
+  {#if deleteProjectOpen && projectsStore.active}
+    <DeleteProjectModal
+      project={projectsStore.active}
+      onconfirm={confirmDeleteActiveProject}
+      oncancel={() => (deleteProjectOpen = false)}
+    />
   {/if}
 </div>

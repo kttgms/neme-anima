@@ -1,11 +1,11 @@
 <script lang="ts">
   import { projectsStore } from "$lib/stores/projects.svelte";
-  import DeleteProjectModal from "$lib/components/DeleteProjectModal.svelte";
 
-  type Props = { onopenCreate: () => void };
-  const { onopenCreate }: Props = $props();
-
-  let confirmDelete = $state(false);
+  // Delete modal is intentionally mounted in App.svelte, not here — the
+  // top bar uses backdrop-blur, which creates a CSS containing block for
+  // position:fixed descendants and would clip the modal to header bounds.
+  type Props = { onopenCreate: () => void; onopenDelete: () => void };
+  const { onopenCreate, onopenDelete }: Props = $props();
 
   function isActive(slug: string): boolean {
     return projectsStore.active?.slug === slug;
@@ -13,13 +13,6 @@
 
   async function selectProject(slug: string) {
     await projectsStore.load(slug);
-  }
-
-  async function confirmAndDelete() {
-    const slug = projectsStore.active?.slug;
-    if (!slug) return;
-    await projectsStore.delete(slug);
-    confirmDelete = false;
   }
 </script>
 
@@ -41,7 +34,7 @@
       {#if active}
         <button
           type="button"
-          onclick={(e) => { e.stopPropagation(); confirmDelete = true; }}
+          onclick={(e) => { e.stopPropagation(); onopenDelete(); }}
           aria-label="delete project"
           title="Delete project"
           class="pr-2 pl-1 py-1 text-white/70 hover:text-white"
@@ -70,11 +63,3 @@
     title="New project"
   >+</button>
 </div>
-
-{#if confirmDelete && projectsStore.active}
-  <DeleteProjectModal
-    project={projectsStore.active}
-    onconfirm={confirmAndDelete}
-    oncancel={() => (confirmDelete = false)}
-  />
-{/if}
