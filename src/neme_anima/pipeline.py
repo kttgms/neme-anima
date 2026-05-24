@@ -67,8 +67,15 @@ def _resolve_thresholds(project: Project) -> Thresholds:
         if section is None:
             continue
         for k, v in section_overrides.items():
-            if hasattr(section, k):
-                setattr(section, k, v)
+            if not hasattr(section, k):
+                continue
+            # ``TagConfig.exclude_tags`` is annotated ``tuple[str, ...]``
+            # but JSON deserializes it as a list. Coerce so the runtime
+            # type matches the annotation (also keeps set(...) callers
+            # tolerant if the field ever ends up in a typed protocol).
+            if section_name == "tag" and k == "exclude_tags":
+                v = tuple(v)
+            setattr(section, k, v)
     return base
 
 
