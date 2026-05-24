@@ -118,6 +118,24 @@ class JobQueue:
             for j in self._jobs
         ]
 
+    def is_last_for_folder(self, project_folder: str, *, current_job_id: str) -> bool:
+        """True iff no PENDING job (other than ``current_job_id``) targets
+        ``project_folder``. The queue worker calls this from inside the
+        runner of the currently-running job to decide whether to tear down
+        GPU model state after the job completes.
+
+        Running jobs are not counted — by construction the queue runs one
+        job at a time, so the only RUNNING job is the caller itself.
+        """
+        for j in self._jobs:
+            if j.job_id == current_job_id:
+                continue
+            if j.status != JobStatus.PENDING:
+                continue
+            if j.payload.get("project_folder") == project_folder:
+                return False
+        return True
+
     async def wait_idle(self) -> None:
         await self._idle.wait()
 

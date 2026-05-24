@@ -127,3 +127,27 @@ async def test_broadcasts_queue_update_on_change():
     await q.wait_idle()
     await q.stop()
     assert saw_update
+
+
+async def test_has_other_pending_for_folder_reports_correctly():
+    """is_last_for_folder is the signal the pipeline runner uses to decide
+    whether to tear down WD14/CUDA after this job. It must be True only
+    when no OTHER pending job targets the same project folder."""
+    from neme_anima.server.events import Broadcaster
+    from neme_anima.server.queue import JobQueue
+
+    async def runner(job_id, payload, broadcaster, cancel_token):
+        return  # never actually runs in this test
+
+    q = JobQueue(runner=runner, broadcaster=Broadcaster())
+    a = await q.submit({"project_folder": "/p/alpha", "kind": "extract"})
+    b = await q.submit({"project_folder": "/p/alpha", "kind": "extract"})
+    c = await q.submit({"project_folder": "/p/beta",  "kind": "extract"})
+
+    # With job `a` running, two other pending jobs exist; only one is for
+    # /p/alpha, so a's release decision is False.
+    assert q.is_last_for_folder("/p/alpha", current_job_id=a) is False
+    # Job `c`'s folder has only itself pending, so it would release.
+    assert q.is_last_for_folder("/p/beta", current_job_id=c) is True
+    # Unknown folder = no other matching pending = release.
+    assert q.is_last_for_folder("/p/gamma", current_job_id="zzz") is True

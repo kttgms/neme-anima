@@ -29,6 +29,7 @@ def default_state_dir() -> Path:
 
 def _make_pipeline_runner(
     active_progresses: dict[str, "BroadcasterProgress"],  # noqa: F821
+    queue_holder: dict[str, "JobQueue"] | None = None,
 ):
     """Build a JobQueue runner that knows about the per-job progress registry.
 
@@ -61,6 +62,13 @@ def _make_pipeline_runner(
                 None,
             )
 
+        queue = queue_holder.get("queue") if queue_holder is not None else None
+        release_models = True
+        if queue is not None:
+            release_models = queue.is_last_for_folder(
+                str(project_folder), current_job_id=job_id,
+            )
+
         progress = BroadcasterProgress(
             loop=asyncio.get_running_loop(),
             broadcaster=broadcaster,
@@ -84,13 +92,17 @@ def _make_pipeline_runner(
             try:
                 if kind == "extract":
                     run_extract(
-                        project=project, source_idx=int(payload["source_idx"]),
+                        project=project,
+                        source_idx=int(payload["source_idx"]),
                         progress=progress,
+                        release_models=release_models,
                     )
                 elif kind == "rerun":
                     run_rerun(
-                        project=project, video_stem=str(payload["video_stem"]),
+                        project=project,
+                        video_stem=str(payload["video_stem"]),
                         progress=progress,
+                        release_models=release_models,
                     )
                 else:
                     raise ValueError(f"unknown job kind: {kind!r}")
@@ -128,9 +140,12 @@ def create_app(*, state_dir: Path | None = None) -> FastAPI:
     registry = ProjectRegistry(state_dir / "db.sqlite")
     broadcaster = Broadcaster()
     active_progresses: dict[str, "BroadcasterProgress"] = {}  # noqa: F821
+    queue_holder: dict[str, "JobQueue"] = {}
     queue = JobQueue(
-        runner=_make_pipeline_runner(active_progresses), broadcaster=broadcaster,
+        runner=_make_pipeline_runner(active_progresses, queue_holder),
+        broadcaster=broadcaster,
     )
+    queue_holder["queue"] = queue
     # Training has its own coordinator (one active subprocess at a time);
     # kept distinct from the extraction queue so the existing job-status
     # plumbing doesn't have to grow a second "kind" branch.
