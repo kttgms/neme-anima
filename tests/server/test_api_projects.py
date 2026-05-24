@@ -233,3 +233,41 @@ async def test_patch_auto_delete_rejected_roundtrips(client, tmp_path: Path):
     # Re-fetch to confirm it survived the round trip.
     body = (await client.get("/api/projects/p")).json()
     assert body["auto_delete_rejected"] is True
+
+
+async def test_delete_with_delete_files_true_removes_folder(
+    client, tmp_path: Path,
+):
+    """The bin-icon UX in the badge always passes delete_files=True.
+    Confirm the endpoint actually nukes the folder so the UI's promise
+    matches reality."""
+    folder = tmp_path / "doomed"
+    Project.create(folder, name="doomed")
+    await client.post("/api/projects/register", json={"folder": str(folder)})
+
+    assert folder.exists()
+    resp = await client.request(
+        "DELETE", "/api/projects/doomed",
+        json={"delete_files": True},
+    )
+    assert resp.status_code == 204, resp.text
+    assert not folder.exists(), "delete_files=True must rmtree the folder"
+
+    # Registry entry is also gone.
+    list_resp = await client.get("/api/projects")
+    assert all(r["slug"] != "doomed" for r in list_resp.json())
+
+
+async def test_delete_with_delete_files_false_keeps_folder(
+    client, tmp_path: Path,
+):
+    folder = tmp_path / "spared"
+    Project.create(folder, name="spared")
+    await client.post("/api/projects/register", json={"folder": str(folder)})
+
+    resp = await client.request(
+        "DELETE", "/api/projects/spared",
+        json={"delete_files": False},
+    )
+    assert resp.status_code == 204
+    assert folder.exists(), "delete_files=False must leave the folder alone"
