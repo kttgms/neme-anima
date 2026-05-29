@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from pathlib import Path
 
 from httpx import ASGITransport, AsyncClient
@@ -16,6 +17,17 @@ async def test_app_starts_and_serves_health(tmp_path: Path):
         resp = await client.get("/api/health")
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
+
+
+async def test_version_endpoint_returns_package_version(tmp_path: Path):
+    app = create_app(state_dir=tmp_path / "state")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/version")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["version"] == version("neme-anima")
+    assert body["version"]
 
 
 async def test_app_exposes_registry_and_queue_in_state(tmp_path: Path):

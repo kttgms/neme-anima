@@ -23,6 +23,16 @@ from neme_anima.storage.project import Project
 logger = logging.getLogger(__name__)
 
 
+def _app_version() -> str:
+    """Resolve the installed package version, falling back to a sentinel
+    when metadata is unavailable (e.g. a bare source checkout)."""
+    try:
+        from importlib.metadata import version
+        return version("neme-anima")
+    except Exception:
+        return "0.0.0+unknown"
+
+
 def default_state_dir() -> Path:
     return Path.home() / ".neme-anima"
 
@@ -172,6 +182,10 @@ def create_app(*, state_dir: Path | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict:
         return {"ok": True}
+
+    @app.get("/api/version")
+    async def app_version() -> dict:
+        return {"version": _app_version()}
 
     # Routers added later (Tasks 6-10) — currently stubs.
     from neme_anima.server.api import (
