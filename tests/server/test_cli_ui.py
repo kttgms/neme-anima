@@ -21,3 +21,9 @@ def test_ui_dry_run_starts_server_and_returns(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("NEME_STATE_DIR", str(tmp_path / "state"))
     result = runner.invoke(app, ["ui", "--dry-run"])
     assert result.exit_code == 0, result.output
+
+
+def test_ui_help_shows_default_port_9999():
+    result = runner.invoke(app, ["ui", "--help"])
+    assert result.exit_code == 0
+    assert "9999" in result.output

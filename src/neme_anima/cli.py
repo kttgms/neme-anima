@@ -130,7 +130,7 @@ def project_rerun(
 @app.command()
 def ui(
     host: str = typer.Option("127.0.0.1", help="Bind address."),
-    port: int = typer.Option(0, help="Port to bind; 0 picks a free one."),
+    port: int = typer.Option(9999, help="Port to bind; pass 0 to pick a free one."),
     no_browser: bool = typer.Option(False, "--no-browser",
                                     help="Don't auto-open the browser."),
     dry_run: bool = typer.Option(False, "--dry-run",
