@@ -243,6 +243,35 @@
     return `${stem}-${ckptName}.safetensors`;
   }
 
+  // Shortcut: export a run's newest LoRA epoch without expanding it. We fetch
+  // the checkpoint list on demand to get the exact name + diffusion-pipe subdir
+  // the export URL needs, pick the highest-epoch LoRA, then trigger a download.
+  let exportingRun = $state<string | null>(null);
+  async function exportLatestEpoch(runName: string) {
+    const slug = projectsStore.active?.slug;
+    if (!slug || exportingRun) return;
+    exportingRun = runName;
+    try {
+      const data = await api.listTrainingCheckpoints(slug, runName);
+      const loras = data.checkpoints.filter((c) => c.epoch != null);
+      if (loras.length === 0) {
+        window.alert("This run has no saved LoRA epoch to export yet.");
+        return;
+      }
+      const latest = loras.reduce((a, b) => ((b.epoch ?? -1) > (a.epoch ?? -1) ? b : a));
+      const link = document.createElement("a");
+      link.href = api.exportCheckpointUrl(slug, runName, latest.name, latest.subdir);
+      link.download = "";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      window.alert("Export failed: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      exportingRun = null;
+    }
+  }
+
   // Trigger the initial load + start polling whenever the active project
   // changes. Use a derived value to drive the effect so tab switches don't
   // double-fetch.
@@ -765,6 +794,24 @@
                       </span>
                     {/if}
 
+                    {#if r.checkpoints > 0}
+                      <button
+                        type="button"
+                        onclick={() => exportLatestEpoch(r.name)}
+                        disabled={exportingRun === r.name}
+                        class="w-6 h-6 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-100 hover:bg-ink-800 disabled:opacity-40"
+                        title={r.latest_checkpoint
+                          ? `Export latest epoch as ${exportFilename(r.latest_checkpoint)}`
+                          : "Export latest epoch"}
+                        aria-label="Export latest epoch"
+                      >
+                        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                      </button>
+                    {/if}
                     <button
                       type="button"
                       onclick={() => copyPath(r.path)}
