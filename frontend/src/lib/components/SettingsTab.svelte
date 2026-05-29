@@ -141,6 +141,11 @@
     autoDeleteRejected = projectsStore.active?.auto_delete_rejected ?? false;
   });
 
+  let projectName = $state<string>(projectsStore.active?.name ?? "");
+  $effect(() => {
+    projectName = projectsStore.active?.name ?? "";
+  });
+
   let blacklistTags = $derived<string[]>(
     (overrides.tag?.exclude_tags as string[] | undefined) ?? [],
   );
@@ -245,6 +250,7 @@
     saving = true;
     try {
       await api.patchProject(slug, {
+        name: projectName.trim() || projectsStore.active?.name,
         thresholds_overrides: overrides,
         pause_before_tag: pauseBeforeTag,
         auto_delete_rejected: autoDeleteRejected,
@@ -262,6 +268,7 @@
         },
       });
       await projectsStore.load(slug);
+      await projectsStore.refresh();
       savedAt = Date.now();
     } finally {
       saving = false;
@@ -300,6 +307,22 @@
         class="px-4 py-1.5 text-xs rounded gradient-accent text-white disabled:opacity-50"
       >{saving ? "Saving…" : "Save"}</button>
     </div>
+  </div>
+
+  <div class="bg-ink-900 border border-ink-700 rounded-xl p-4 mb-3">
+    <h3 class="text-sm font-medium text-slate-200 mb-3">Project</h3>
+    <label class="block">
+      <span class="block text-[10px] uppercase tracking-wide text-slate-500">Display name</span>
+      <input
+        bind:value={projectName}
+        placeholder="Project name"
+        class="w-full mt-1 px-3 py-1.5 bg-ink-950 border border-ink-700 rounded text-sm focus:outline-none focus:border-accent-500"
+      />
+      <span class="block text-[10px] text-slate-600 mt-1">
+        Renames the project's display name only. The folder on disk and its URL
+        are unchanged. Saved with the Save button above.
+      </span>
+    </label>
   </div>
 
   <div class="bg-ink-900 border border-ink-700 rounded-xl p-4 mb-3">
