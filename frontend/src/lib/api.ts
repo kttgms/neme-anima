@@ -62,6 +62,8 @@ export const deleteProject = (slug: string, deleteFiles: boolean) =>
     method: "DELETE", body: JSON.stringify({ delete_files: deleteFiles }),
   });
 
+export const getVersion = () => request<{ version: string }>("/api/version");
+
 // ---- sources ----
 
 export const addSources = (slug: string, paths: string[]) =>

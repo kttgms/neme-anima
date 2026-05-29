@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import TagBlacklistInput from "$lib/components/TagBlacklistInput.svelte";
@@ -117,6 +117,15 @@
 
   let saving = $state(false);
   let savedAt = $state<number | null>(null);
+
+  let appVersion = $state<string>("");
+  onMount(async () => {
+    try {
+      appVersion = (await api.getVersion()).version;
+    } catch {
+      /* leave blank if the endpoint is unavailable */
+    }
+  });
 
   let pauseBeforeTag = $state<boolean>(
     projectsStore.active?.pause_before_tag ?? true,
@@ -273,7 +282,12 @@
 
 <div class="mt-4 max-w-3xl mx-auto">
   <div class="flex items-center justify-between mb-4">
-    <h2 class="text-base font-semibold text-slate-200">Per-project settings</h2>
+    <div class="flex items-baseline gap-2">
+      <h2 class="text-base font-semibold text-slate-200">Per-project settings</h2>
+      {#if appVersion}
+        <span class="text-xs text-slate-500">v{appVersion}</span>
+      {/if}
+    </div>
     <div class="flex gap-2 items-center">
       {#if savedAt}
         <span class="text-xs text-emerald-400">saved</span>
