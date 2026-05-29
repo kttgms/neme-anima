@@ -233,6 +233,16 @@
     }
   }
 
+  // The download name the export endpoint will produce. Mirrors the backend's
+  // _sanitize_filename (training.py): non [A-Za-z0-9._-] runs → "_", trim
+  // leading/trailing "._-", fall back to the slug when empty.
+  function exportFilename(ckptName: string): string {
+    const name = projectsStore.active?.name ?? "";
+    const cleaned = name.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._-]+|[._-]+$/g, "");
+    const stem = cleaned || (projectsStore.active?.slug ?? "");
+    return `${stem}-${ckptName}.safetensors`;
+  }
+
   // Trigger the initial load + start polling whenever the active project
   // changes. Use a derived value to drive the effect so tab switches don't
   // double-fetch.
@@ -813,7 +823,7 @@
                                   href={api.exportCheckpointUrl(projectsStore.active!.slug, r.name, cp.name, cp.subdir)}
                                   download
                                   class="w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-100 hover:bg-ink-800"
-                                  title="Export this LoRA as a project-named .safetensors"
+                                  title={`Export as ${exportFilename(cp.name)}`}
                                   aria-label="Export checkpoint"
                                 >
                                   <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
