@@ -110,6 +110,7 @@ def _project_view(project: Project) -> dict:
         "source_root": project.source_root,
         "pause_before_tag": project.pause_before_tag,
         "auto_delete_rejected": project.auto_delete_rejected,
+        "rejected_count": _count_rejected(project),
         "llm": asdict(project.llm),
     }
 
@@ -133,6 +134,17 @@ def _stems_with_kept_frames(project: Project) -> set[str]:
     except OSError:
         return set()
     return stems
+
+
+def _count_rejected(project: Project) -> int:
+    """Number of files currently sitting in the project's rejected/ folder."""
+    rejected = project.rejected_dir
+    if not rejected.exists():
+        return 0
+    try:
+        return sum(1 for e in rejected.iterdir() if e.is_file())
+    except OSError:
+        return 0
 
 
 @router.get("")
@@ -244,3 +256,20 @@ async def delete_project(
     if body.delete_files:
         shutil.rmtree(entry.folder, ignore_errors=True)
     return Response(status_code=204)
+
+
+@router.delete("/{slug}/output/rejected")
+async def delete_rejected_frames(request: Request, slug: str) -> dict:
+    """Delete every file in the project's rejected/ folder. Idempotent."""
+    project = _load_or_404(request, slug)
+    rejected = project.rejected_dir
+    deleted = 0
+    if rejected.exists():
+        for entry in list(rejected.iterdir()):
+            if entry.is_file():
+                try:
+                    entry.unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+    return {"deleted": deleted}

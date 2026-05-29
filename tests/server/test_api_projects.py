@@ -291,3 +291,33 @@ async def test_patch_rejects_blank_name(client, tmp_path: Path):
     resp = await client.patch("/api/projects/p", json={"name": "   "})
     assert resp.status_code == 400
     assert Project.load(tmp_path / "p").name == "Keep"
+
+
+async def test_project_view_reports_rejected_count(client, tmp_path: Path):
+    project = Project.create(tmp_path / "p", name="p")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+    project.rejected_dir.mkdir(parents=True, exist_ok=True)
+    (project.rejected_dir / "a__1.png").write_bytes(b"x")
+    (project.rejected_dir / "b__2.png").write_bytes(b"y")
+    resp = await client.get("/api/projects/p")
+    assert resp.json()["rejected_count"] == 2
+
+
+async def test_delete_rejected_removes_files(client, tmp_path: Path):
+    project = Project.create(tmp_path / "p", name="p")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+    project.rejected_dir.mkdir(parents=True, exist_ok=True)
+    (project.rejected_dir / "a__1.png").write_bytes(b"x")
+    (project.rejected_dir / "b__2.png").write_bytes(b"y")
+    resp = await client.delete("/api/projects/p/output/rejected")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 2
+    assert list(project.rejected_dir.iterdir()) == []
+
+
+async def test_delete_rejected_idempotent_when_empty(client, tmp_path: Path):
+    Project.create(tmp_path / "p", name="p")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+    resp = await client.delete("/api/projects/p/output/rejected")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] == 0
