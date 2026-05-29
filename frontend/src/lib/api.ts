@@ -62,6 +62,12 @@ export const deleteProject = (slug: string, deleteFiles: boolean) =>
     method: "DELETE", body: JSON.stringify({ delete_files: deleteFiles }),
   });
 
+export const deleteRejectedFrames = (slug: string) =>
+  request<{ deleted: number }>(
+    `/api/projects/${encodeURIComponent(slug)}/output/rejected`,
+    { method: "DELETE" },
+  );
+
 export const getVersion = () => request<{ version: string }>("/api/version");
 
 // ---- sources ----

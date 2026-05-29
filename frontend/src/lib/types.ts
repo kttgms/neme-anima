@@ -85,6 +85,7 @@ export interface ProjectView {
   source_root: string | null;
   pause_before_tag: boolean;
   auto_delete_rejected: boolean;
+  rejected_count: number;
   llm: LLMConfig;
 }
 

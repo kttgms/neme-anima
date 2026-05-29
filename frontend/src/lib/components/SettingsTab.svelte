@@ -249,6 +249,9 @@
     if (!slug) return;
     saving = true;
     try {
+      const wasAutoDeleteOff = !(projectsStore.active?.auto_delete_rejected ?? false);
+      const turningAutoDeleteOn = autoDeleteRejected && wasAutoDeleteOff;
+      const existingRejected = projectsStore.active?.rejected_count ?? 0;
       await api.patchProject(slug, {
         name: projectName.trim() || projectsStore.active?.name,
         thresholds_overrides: overrides,
@@ -267,6 +270,12 @@
           api_key: llmApiKey.trim(),
         },
       });
+      if (turningAutoDeleteOn && existingRejected > 0) {
+        if (confirm(`Delete ${existingRejected} existing rejected frame${existingRejected === 1 ? "" : "s"}?`)) {
+          await api.deleteRejectedFrames(slug);
+        }
+        // Cancel: keep the setting saved, skip the one-time deletion.
+      }
       await projectsStore.load(slug);
       await projectsStore.refresh();
       savedAt = Date.now();
