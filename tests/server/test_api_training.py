@@ -198,3 +198,58 @@ async def test_delete_unknown_run_404s(client, project: Project):
         f"/api/projects/{project.slug}/training/runs/no-such-run",
     )
     assert resp.status_code == 404
+
+
+async def test_export_checkpoint_streams_named_file(app, tmp_path: Path):
+    transport = ASGITransport(app=app)
+    project = Project.create(tmp_path / "exp", name="My Project!")
+    app.state.registry.register(project)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        ckpt_dir = project.training_runs_dir / "run1" / "epoch20"
+        ckpt_dir.mkdir(parents=True)
+        (ckpt_dir / "adapter_model.safetensors").write_bytes(b"LORA-WEIGHTS")
+
+        resp = await client.get(
+            f"/api/projects/{project.slug}/training/runs/run1/checkpoints/epoch20/export"
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"LORA-WEIGHTS"
+        cd = resp.headers["content-disposition"]
+        assert "My_Project-epoch20.safetensors" in cd
+
+
+async def test_export_checkpoint_404_when_missing(client, project: Project):
+    resp = await client.get(
+        f"/api/projects/{project.slug}/training/runs/nope/checkpoints/epoch1/export"
+    )
+    assert resp.status_code == 404
+
+
+async def test_export_checkpoint_404_when_checkpoint_missing(app, tmp_path: Path):
+    transport = ASGITransport(app=app)
+    project = Project.create(tmp_path / "p3", name="p3")
+    app.state.registry.register(project)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # run1 exists but epochX does not.
+        project.training_runs_dir.joinpath("run1").mkdir(parents=True)
+
+        resp = await client.get(
+            f"/api/projects/{project.slug}/training/runs/run1/checkpoints/epochX/export"
+        )
+        assert resp.status_code == 404
+
+
+async def test_export_checkpoint_glob_fallback(app, tmp_path: Path):
+    transport = ASGITransport(app=app)
+    project = Project.create(tmp_path / "p4", name="p4")
+    app.state.registry.register(project)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        ckpt_dir = project.training_runs_dir / "run1" / "epoch5"
+        ckpt_dir.mkdir(parents=True)
+        (ckpt_dir / "model.safetensors").write_bytes(b"FALLBACK")
+
+        resp = await client.get(
+            f"/api/projects/{project.slug}/training/runs/run1/checkpoints/epoch5/export"
+        )
+        assert resp.status_code == 200
+        assert resp.content == b"FALLBACK"

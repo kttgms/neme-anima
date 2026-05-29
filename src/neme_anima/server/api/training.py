@@ -9,10 +9,12 @@ the run panel current. Heavy work (subprocess management) is delegated to
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, fields
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from neme_anima import training as training_lib
@@ -352,6 +354,58 @@ async def delete_checkpoint(
         )
     training_lib._rmtree(target)
     return Response(status_code=204)
+
+
+def _sanitize_filename(name: str) -> str:
+    """Reduce a display name to a safe project-name component for a filename."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-")
+    return cleaned
+
+
+@router.get("/{slug}/training/runs/{run_name}/checkpoints/{ckpt_name}/export")
+async def export_checkpoint(
+    request: Request, slug: str, run_name: str, ckpt_name: str,
+    subdir: str = "",
+) -> FileResponse:
+    """Stream a checkpoint's LoRA ``.safetensors`` as a project-named download.
+    Non-destructive — the on-disk file keeps its original name."""
+    # ``subdir`` is the diffusion-pipe sub-run-dir nesting this checkpoint
+    # (empty for direct children of ``run_dir``); mirrors delete_checkpoint.
+    project = _load_or_404(request, slug)
+    run_dir = project.training_runs_dir / run_name
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"unknown run: {run_name}")
+    if not ckpt_name or "/" in ckpt_name or ckpt_name in (".", ".."):
+        raise HTTPException(status_code=400, detail="invalid checkpoint name")
+    if subdir and ("/" in subdir or subdir in (".", "..")):
+        raise HTTPException(status_code=400, detail="invalid subdir")
+    parent = run_dir / subdir if subdir else run_dir
+    ckpt_dir = parent / ckpt_name
+    try:
+        ckpt_dir.resolve().relative_to(run_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid checkpoint name")
+    if not ckpt_dir.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown checkpoint: {subdir + '/' if subdir else ''}{ckpt_name}",
+        )
+    weights = ckpt_dir / "adapter_model.safetensors"
+    if not weights.is_file():
+        candidates = sorted(ckpt_dir.glob("*.safetensors"))
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail="no .safetensors file in this checkpoint",
+            )
+        weights = candidates[0]
+    stem = _sanitize_filename(project.name) or project.slug
+    download_name = f"{stem}-{ckpt_name}.safetensors"
+    return FileResponse(
+        path=weights,
+        media_type="application/octet-stream",
+        filename=download_name,
+    )
 
 
 @router.delete("/{slug}/training/runs/{run_name}", status_code=204)
