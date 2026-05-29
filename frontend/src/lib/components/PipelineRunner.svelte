@@ -2,11 +2,17 @@
   import * as api from "$lib/api";
   import type { JobStages, PipelineStage } from "$lib/types";
 
-  type Props = { job: JobStages };
-  const { job }: Props = $props();
+  // `error` is the queue-level failure reason (queue.update → status "failed").
+  // It's the authoritative signal: a job can fail *before* any stage event is
+  // ever published (e.g. project load or a heavy import throws), so relying on
+  // a failed stage alone leaves the row frozen on stale "pending" chips. When
+  // present, it flips the runner to the failed state even if no stage is red.
+  type Props = { job: JobStages; error?: string | null };
+  const { job, error = null }: Props = $props();
 
   let allDone = $derived(job.stages.every((s) => s.status === "done"));
-  let anyFailed = $derived(job.stages.some((s) => s.status === "failed"));
+  let anyStageFailed = $derived(job.stages.some((s) => s.status === "failed"));
+  let failed = $derived(anyStageFailed || !!error);
   let paused = $derived(!!job.paused);
   let runningStage = $derived(job.stages.find((s) => s.status === "running") ?? null);
 
@@ -43,7 +49,7 @@
 
 <div
   class="rounded-lg border bg-ink-950/70 backdrop-blur px-3 py-2.5 transition-colors w-full
-    {anyFailed
+    {failed
       ? 'border-red-500/40 shadow-[0_0_20px_rgba(239,68,68,0.15)]'
       : paused
         ? 'border-amber-400/60 shadow-[0_0_24px_rgba(251,191,36,0.20)]'
@@ -68,6 +74,15 @@
         {#if job.pause_message}
           <span class="text-[11px] text-amber-200/80 truncate">· {job.pause_message}</span>
         {/if}
+      {:else if failed}
+        <span class="text-red-400 text-sm flex-shrink-0">✕</span>
+        <span class="text-[11px] uppercase tracking-wide text-red-400 font-medium flex-shrink-0">Pipeline failed</span>
+        {#if !anyStageFailed && error}
+          <!-- No stage went red (the job crashed before/around the pipeline
+               body), so the progress bar below has nothing to show. Surface
+               the queue-level reason here so the failure is never silent. -->
+          <span class="text-[11px] text-red-300/80 truncate" title={error}>· {error}</span>
+        {/if}
       {:else if allDone}
         <span class="text-emerald-400 text-sm flex-shrink-0">✓</span>
         <span class="text-[11px] uppercase tracking-wide text-emerald-400 font-medium flex-shrink-0">Pipeline complete</span>
@@ -77,9 +92,6 @@
             · rejected <span class="text-slate-300 font-mono">{job.summary.rejected ?? 0}</span>
           </span>
         {/if}
-      {:else if anyFailed}
-        <span class="text-red-400 text-sm flex-shrink-0">✕</span>
-        <span class="text-[11px] uppercase tracking-wide text-red-400 font-medium flex-shrink-0">Pipeline failed</span>
       {:else}
         <span class="relative inline-flex w-2 h-2 flex-shrink-0">
           <span class="absolute inset-0 rounded-full bg-accent-400 animate-ping opacity-75"></span>
@@ -117,7 +129,7 @@
   </div>
 
   <!-- Progress bar + message for the running stage (or last failed) -->
-  {#if runningStage || anyFailed}
+  {#if runningStage || anyStageFailed}
     {@const focus = runningStage ?? job.stages.find((s) => s.status === "failed")!}
     <div class="mt-2.5">
       <div class="flex items-center justify-between mb-1 min-w-0">

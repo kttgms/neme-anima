@@ -24,6 +24,17 @@ class QueueStore {
     return this.items.find(i => i.status === "running") ?? null;
   }
 
+  /** The failure reason for a job, or null if it isn't a failed job.
+   *  This is the authoritative failure signal — the queue marks *every*
+   *  uncaught exception as failed with an error string, including ones
+   *  that crash before the pipeline emits any stage event. Returns a
+   *  generic fallback if the job failed without an error string. */
+  errorFor(jobId: string): string | null {
+    const item = this.items.find(i => i.job_id === jobId);
+    if (!item || item.status !== "failed") return null;
+    return item.error ?? "Job failed";
+  }
+
   pendingCount(): number {
     return this.items.filter(i => i.status === "pending").length;
   }

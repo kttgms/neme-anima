@@ -4,6 +4,7 @@
   import { colorForIndex } from "$lib/characterColors";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { jobsStore } from "$lib/stores/jobs.svelte";
+  import { queueStore } from "$lib/stores/queue.svelte";
   import type { Source } from "$lib/types";
   import ConfirmWipeModal from "./ConfirmWipeModal.svelte";
   import PipelineRunner from "./PipelineRunner.svelte";
@@ -145,10 +146,18 @@
     const slug = projectsStore.active?.slug;
     return slug ? jobsStore.forSource(slug, sourceIdx) : null;
   });
+  // A queue-level failure (status "failed") can land without any stage going
+  // red — the job crashed before/around the pipeline body. Treat that as a
+  // terminal state too, otherwise the row's buttons stay disabled forever on
+  // stale "pending" stages.
+  let jobFailed = $derived.by(() => {
+    if (!job) return false;
+    return queueStore.errorFor(job.job_id) !== null
+      || job.stages.some((s) => s.status === "failed");
+  });
   let pipelineActive = $derived.by(() => {
     if (!job) return false;
-    return !job.stages.every((s) => s.status === "done")
-      && !job.stages.some((s) => s.status === "failed");
+    return !job.stages.every((s) => s.status === "done") && !jobFailed;
   });
   let actionsDisabled = $derived(busy || pipelineActive);
 
@@ -373,7 +382,7 @@
        progress box has room to lay out horizontally without bleeding
        into the action buttons on narrower viewports. -->
   <div class="min-w-0">
-    <PipelineRunner {job} />
+    <PipelineRunner {job} error={queueStore.errorFor(job.job_id)} />
   </div>
 {/if}
 </div>
