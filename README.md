@@ -44,6 +44,8 @@ For the trainer:
 ## One-click install and run
 
 ```sh
+git clone https://github.com/negaga53/neme-anima.git
+cd neme-anima
 bash install_and_run.sh
 ```
 
