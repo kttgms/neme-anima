@@ -808,6 +808,21 @@
                             <div class="flex items-center gap-2 text-[10px] text-slate-500 shrink-0">
                               <span>{fmtBytes(cp.size_bytes)}</span>
                               <span>{new Date(cp.modified_at).toLocaleString()}</span>
+                              {#if !isStep}
+                                <a
+                                  href={api.exportCheckpointUrl(projectsStore.active!.slug, r.name, cp.name, cp.subdir)}
+                                  download
+                                  class="w-5 h-5 inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-100 hover:bg-ink-800"
+                                  title="Export this LoRA as a project-named .safetensors"
+                                  aria-label="Export checkpoint"
+                                >
+                                  <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                  </svg>
+                                </a>
+                              {/if}
                               <button
                                 type="button"
                                 onclick={() => copyPath(cp.path)}

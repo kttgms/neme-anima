@@ -557,6 +557,13 @@ export const deleteTrainingCheckpoint = (
   return request<void>(url + qs, { method: "DELETE" });
 };
 
+export const exportCheckpointUrl = (
+  slug: string, runName: string, ckptName: string, subdir: string = "",
+) => {
+  const url = `/api/projects/${encodeURIComponent(slug)}/training/runs/${encodeURIComponent(runName)}/checkpoints/${encodeURIComponent(ckptName)}/export`;
+  return subdir ? `${url}?subdir=${encodeURIComponent(subdir)}` : url;
+};
+
 export const deleteTrainingRun = (slug: string, runName: string) =>
   request<void>(
     `/api/projects/${encodeURIComponent(slug)}/training/runs/${encodeURIComponent(runName)}`,
