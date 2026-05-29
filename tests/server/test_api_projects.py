@@ -271,3 +271,23 @@ async def test_delete_with_delete_files_false_keeps_folder(
     )
     assert resp.status_code == 204
     assert folder.exists(), "delete_files=False must leave the folder alone"
+
+
+async def test_patch_renames_display_name(client, tmp_path: Path):
+    Project.create(tmp_path / "p", name="Old Name")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+    resp = await client.patch("/api/projects/p", json={"name": "New Name"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "New Name"
+    assert body["slug"] == "p"  # slug + folder unchanged
+    reloaded = Project.load(tmp_path / "p")
+    assert reloaded.name == "New Name"
+
+
+async def test_patch_rejects_blank_name(client, tmp_path: Path):
+    Project.create(tmp_path / "p", name="Keep")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "p")})
+    resp = await client.patch("/api/projects/p", json={"name": "   "})
+    assert resp.status_code == 400
+    assert Project.load(tmp_path / "p").name == "Keep"

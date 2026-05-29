@@ -207,7 +207,10 @@ async def get_project(request: Request, slug: str) -> dict:
 async def patch_project(request: Request, slug: str, body: PatchProjectBody) -> dict:
     project = _load_or_404(request, slug)
     if body.name is not None:
-        project.name = body.name
+        new_name = body.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="project name cannot be empty")
+        project.name = new_name
     if body.thresholds_overrides is not None:
         project.thresholds_overrides = body.thresholds_overrides
     if body.pause_before_tag is not None:
