@@ -1,0 +1,11 @@
+# Normalize line endings. Without this, cloning on Windows with Git's
+# default core.autocrlf=true rewrites text files to CRLF on checkout — and a
+# shell script with CRLF endings breaks under bash on Linux/WSL/containers
+# with: "$'\r': command not found" / "set: pipefail: invalid option name".
+#
+# `text=auto` lets git store everything LF-normalized in the repo while still
+# checking out the platform's native endings for ordinary text. Shell scripts
+# are pinned to LF on every platform so bash never sees a stray carriage
+# return, no matter how the clone is configured.
+* text=auto
+*.sh text eol=lf
