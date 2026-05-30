@@ -5,9 +5,11 @@
 #
 # Walks an entry-level user from a fresh checkout to a running UI:
 #   1. installs uv (Python package manager) if missing
-#   2. installs ffmpeg + git via apt if missing (sudo will prompt if needed;
-#      ffmpeg is used for thumbnails and segment-editor previews, git for the
-#      trainer clone)
+#   2. installs ffmpeg + git + a C compiler (build-essential) via apt if
+#      missing (sudo will prompt if needed, or runs directly as root). ffmpeg
+#      is used for thumbnails and segment-editor previews, git for the trainer
+#      clone, and gcc so torch.compile / Triton can build CUDA kernels at
+#      training time.
 #   3. installs Node.js + npm if missing (apt with sudo, or nvm fallback)
 #   4. installs Python deps with the GPU extras (`uv sync --group gpu`)
 #   5. builds the frontend bundle
@@ -92,9 +94,9 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 success "uv $(uv --version | awk '{print $2}')"
 
-# ----- 2. system packages (ffmpeg, git) ------------------------------------
+# ----- 2. system packages (ffmpeg, git, C compiler) ------------------------
 
-step "2/10  Checking for system packages (ffmpeg, git)"
+step "2/10  Checking for system packages (ffmpeg, git, C compiler)"
 
 need_pkgs=()
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
@@ -102,6 +104,15 @@ if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; 
 fi
 if ! command -v git >/dev/null 2>&1; then
     need_pkgs+=("git")
+fi
+# torch.compile / Triton shell out to a host C compiler at training time to
+# build CUDA kernels. Bare GPU containers often ship without one, which only
+# surfaces deep into a training run as:
+#   "Failed to find C compiler. Please specify via CC environment variable…"
+# Triton auto-discovers gcc/clang on PATH, so installing build-essential (gcc,
+# cc, make) is enough — no CC env var needed.
+if ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+    need_pkgs+=("build-essential")
 fi
 
 if (( ${#need_pkgs[@]} == 0 )); then
@@ -113,24 +124,40 @@ else
    Install them manually with your package manager and re-run.
    On Debian/Ubuntu/WSL2: sudo apt-get install -y ${need_pkgs[*]}"
     fi
-    if ! command -v sudo >/dev/null 2>&1; then
-        fail "sudo not available — install manually:
+    # Run apt directly as root (common in GPU containers, where sudo often
+    # isn't installed), otherwise via sudo for an unprivileged user.
+    apt_runner=()
+    if [[ "$(id -u)" == "0" ]]; then
+        info "installing via apt (running as root)…"
+    elif command -v sudo >/dev/null 2>&1; then
+        if sudo -n true 2>/dev/null; then
+            info "installing via apt (passwordless sudo)…"
+        else
+            info "installing via apt (sudo may prompt for your password)…"
+        fi
+        apt_runner=(sudo)
+    else
+        fail "need root or sudo to install ${need_pkgs[*]} — install manually:
        apt-get install -y ${need_pkgs[*]}"
     fi
-    if sudo -n true 2>/dev/null; then
-        info "installing via apt (passwordless sudo)…"
-    else
-        info "installing via apt (sudo may prompt for your password)…"
-    fi
-    sudo apt-get update -y
-    sudo apt-get install -y "${need_pkgs[@]}"
+    "${apt_runner[@]}" apt-get update -y
+    "${apt_runner[@]}" apt-get install -y "${need_pkgs[@]}"
 
-    for bin in ffmpeg ffprobe git; do
+    # Verify only the binaries for packages we actually requested.
+    verify_bins=()
+    for pkg in "${need_pkgs[@]}"; do
+        case "$pkg" in
+            ffmpeg)          verify_bins+=(ffmpeg ffprobe) ;;
+            git)             verify_bins+=(git) ;;
+            build-essential) verify_bins+=(gcc) ;;
+        esac
+    done
+    for bin in "${verify_bins[@]}"; do
         if ! command -v "$bin" >/dev/null 2>&1; then
             fail "$bin still not found after install — bailing out."
         fi
     done
-    success "ffmpeg / ffprobe / git installed"
+    success "installed: ${need_pkgs[*]}"
 fi
 
 # ----- 3. node + npm --------------------------------------------------------
