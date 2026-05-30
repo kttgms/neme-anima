@@ -275,7 +275,11 @@
     onauxclick={(e) => { if (e.button === 1) e.preventDefault(); }}
     aria-label="Open frame {frame.filename} preview"
   >
-    <img src={imageUrl} alt="" class="w-full h-full object-cover" loading="lazy" />
+    <!-- draggable=false stops the browser's native image-drag: holding the
+         mouse button a beat too long on a thumb would otherwise start dragging
+         a ghost of the image, which feels like an accidental move and can
+         swallow the intended click. There's no drag-to-reorder feature here. -->
+    <img src={imageUrl} alt="" draggable="false" class="w-full h-full object-cover select-none" loading="lazy" />
 
     {#if selected}
       <!-- Inset border overlay drawn on top of the image, with a faint tint
