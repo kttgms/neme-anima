@@ -662,6 +662,40 @@ async def get_preview(
     return FileResponse(cache_path, media_type="video/mp4")
 
 
+def _convert_cmd(
+    video_path: Path, dest: Path, mode: str, *, with_audio: bool,
+) -> list[str]:
+    """Build the ffmpeg argv for a playback conversion.
+
+    ``remux`` copies the (HEVC) video stream bit-for-bit into MP4 — zero
+    quality loss, near-instant — for browsers that can decode HEVC. ``h264``
+    re-encodes to a small 480p H.264 baseline stream (the old throwaway-preview
+    recipe) for browsers that can't. Both stream progress on stdout via
+    ``-progress pipe:1`` so the caller can compute a percentage.
+    """
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", str(video_path),
+    ]
+    if mode == "remux":
+        cmd += ["-map", "0:v:0", "-c:v", "copy", "-tag:v", "hvc1"]
+    else:  # h264
+        cmd += [
+            "-vf", "scale='min(854,iw)':-2",
+            "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+            "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+        ]
+    if with_audio:
+        if mode == "remux":
+            cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
+        else:
+            cmd += ["-c:a", "aac", "-b:a", "96k", "-ac", "2"]
+    else:
+        cmd += ["-an"]
+    cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(dest)]
+    return cmd
+
+
 def _transcode_preview(video_path: Path, dest: Path) -> None:
     """Run ffmpeg to produce a small H.264 baseline MP4 with faststart.
 

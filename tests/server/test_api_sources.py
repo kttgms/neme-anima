@@ -582,3 +582,32 @@ async def test_segments_404_for_missing_video(
         json={"segments": [{"start_seconds": 1.0, "end_seconds": 2.0}]},
     )
     assert resp.status_code == 404
+
+
+# ---------------- convert command builder ----------------
+
+from pathlib import Path as _P
+
+from neme_anima.server.api.sources import _convert_cmd
+
+
+def test_convert_cmd_remux_copies_video_no_reencode():
+    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "remux", with_audio=True)
+    assert "copy" in cmd                      # video stream copied, not re-encoded
+    assert "hvc1" in cmd                      # tagged so Apple/Safari recognise it
+    assert "libx264" not in cmd
+    assert "-progress" in cmd and "pipe:1" in cmd
+
+
+def test_convert_cmd_h264_scales_to_480p():
+    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "h264", with_audio=True)
+    assert "libx264" in cmd
+    assert any("scale='min(854,iw)':-2" in tok for tok in cmd)
+    assert "copy" not in cmd
+    assert "-progress" in cmd and "pipe:1" in cmd
+
+
+def test_convert_cmd_without_audio_uses_an():
+    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "h264", with_audio=False)
+    assert "-an" in cmd
+    assert "aac" not in cmd
