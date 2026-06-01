@@ -689,6 +689,8 @@ def _convert_cmd(
         if mode == "remux":
             cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
         else:
+            # h264 relies on ffmpeg's automatic stream selection (no explicit -map),
+            # matching the _transcode_preview convention; remux uses explicit -map 0:a:0?.
             cmd += ["-c:a", "aac", "-b:a", "96k", "-ac", "2"]
     else:
         cmd += ["-an"]

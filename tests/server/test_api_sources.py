@@ -611,3 +611,11 @@ def test_convert_cmd_without_audio_uses_an():
     cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "h264", with_audio=False)
     assert "-an" in cmd
     assert "aac" not in cmd
+
+
+def test_convert_cmd_remux_without_audio_keeps_video_copy():
+    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "remux", with_audio=False)
+    assert "-an" in cmd                       # audio suppressed on the no-audio retry
+    assert "copy" in cmd and "hvc1" in cmd    # video still copied losslessly
+    assert "aac" not in cmd                   # no audio encoder when -an
+    assert "-map" in cmd and "0:v:0" in cmd   # video stream still explicitly mapped
