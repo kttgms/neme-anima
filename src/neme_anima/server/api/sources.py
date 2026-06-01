@@ -450,12 +450,6 @@ _VIDEO_MIME_BY_SUFFIX = {
 }
 
 
-# Tracks in-flight preview transcodes by absolute video path so concurrent
-# /preview calls don't kick off duplicate ffmpeg processes for the same
-# source. Module-level singleton — the API server is single-process, so a
-# plain dict is sufficient; no need for a cross-process lock file.
-_PREVIEW_LOCKS: dict[str, asyncio.Lock] = {}
-
 # Per-(path, mode) conversion job state, read by /convert/status. Mutated
 # from the worker thread (plain dict writes are GIL-atomic) and from the
 # request handler. Background tasks are held in _CONVERT_TASKS so the event
@@ -677,67 +671,25 @@ async def convert_status(
 
 @router.get("/{slug}/sources/{idx}/preview")
 async def get_preview(
-    request: Request, slug: str, idx: int,
-) -> Response:
-    """Serve a lazy-transcoded 480p H.264 MP4 of the source.
+    request: Request, slug: str, idx: int, mode: str = "h264",
+) -> FileResponse:
+    """Serve a previously-converted, web-playable MP4 for the given mode.
 
-    The frontend hits this endpoint when the original stream fails to
-    decode in the browser. First call kicks off ffmpeg in a worker
-    thread and returns ``202`` (with ``Retry-After``) while it runs;
-    subsequent calls serve the cached ``.previews/<stem>.mp4`` directly,
-    with full Range support so seeking is responsive.
-
-    The transcode is intentionally aggressive (baseline H.264, CRF 28,
-    short keyframe interval, faststart) — small enough to stream over
-    a local network and broad enough to play in every browser; quality
-    doesn't matter because the user is only using it to pick segment
-    boundaries, not to view the final dataset.
+    Pure file server with Range support — the actual transcode is owned by
+    :func:`convert_source`. Returns 404 if the conversion hasn't been run yet,
+    so the frontend knows to POST /convert first.
     """
+    if mode not in ("remux", "h264"):
+        raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
     project = _load(request, slug)
     if idx < 0 or idx >= len(project.sources):
         raise HTTPException(status_code=404, detail="source index out of range")
     video_path = Path(project.sources[idx].path)
-    if not video_path.is_file():
-        raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
-
-    previews_dir = project.root / ".previews"
-    previews_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = previews_dir / f"{video_path.stem}.mp4"
-    if cache_path.exists() and cache_path.stat().st_size > 0:
-        return FileResponse(cache_path, media_type="video/mp4")
-
-    key = str(video_path.resolve())
-    lock = _PREVIEW_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _PREVIEW_LOCKS[key] = lock
-
-    # If another request is already transcoding this video, tell the
-    # client to come back in a couple of seconds rather than queueing on
-    # the lock (which would tie up the HTTP worker for tens of seconds).
-    if lock.locked():
-        return Response(
-            status_code=202,
-            headers={"Retry-After": "2"},
-            content=(
-                f'{{"status":"transcoding","stem":"{video_path.stem}"}}'
-            ),
-            media_type="application/json",
+    cache_path = _preview_cache_path(project, video_path, mode)
+    if not (cache_path.exists() and cache_path.stat().st_size > 0):
+        raise HTTPException(
+            status_code=404, detail="preview not generated; POST /convert first",
         )
-
-    async with lock:
-        # Re-check after acquiring — another coroutine may have raced us
-        # and finished while we were waiting.
-        if cache_path.exists() and cache_path.stat().st_size > 0:
-            return FileResponse(cache_path, media_type="video/mp4")
-        try:
-            await asyncio.to_thread(_transcode_preview, video_path, cache_path)
-        except Exception as e:
-            logger.exception("preview transcode failed for %s", video_path)
-            raise HTTPException(
-                status_code=500,
-                detail=f"preview transcode failed: {type(e).__name__}: {e}",
-            )
     return FileResponse(cache_path, media_type="video/mp4")
 
 
@@ -768,8 +720,8 @@ def _convert_cmd(
         if mode == "remux":
             cmd += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "192k"]
         else:
-            # h264 relies on ffmpeg's automatic stream selection (no explicit -map),
-            # matching the _transcode_preview convention; remux uses explicit -map 0:a:0?.
+            # h264 relies on ffmpeg's automatic stream selection (no explicit -map);
+            # remux uses explicit -map 0:a:0?.
             cmd += ["-c:a", "aac", "-b:a", "96k", "-ac", "2"]
     else:
         cmd += ["-an"]
@@ -870,76 +822,6 @@ def _run_convert_job(
             "state": "failed", "pct": prev.get("pct", 0.0),
             "mode": mode, "error": f"{type(e).__name__}: {e}",
         }
-
-
-def _transcode_preview(video_path: Path, dest: Path) -> None:
-    """Run ffmpeg to produce a small H.264 baseline MP4 with faststart.
-
-    Tmp-then-rename so a partial output never registers as "ready" in the
-    presence of a crash / kill — the next request will retry.
-    """
-    import shutil as _shutil
-    import subprocess
-
-    if _shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found on PATH")
-
-    # Use a ``.tmp.mp4`` extension (rather than the simpler ``.part``)
-    # so ffmpeg's container detection picks the right muxer for the
-    # output. ``-f mp4`` would also work, but a real ``.mp4`` suffix is
-    # easier to spot in case a crash leaves a stray temp file behind.
-    tmp = dest.with_name(dest.stem + ".tmp" + dest.suffix)
-    cmd_with_audio = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
-        "-i", str(video_path),
-        "-vf", "scale='min(854,iw)':-2",
-        "-c:v", "libx264",
-        "-profile:v", "baseline",
-        "-level", "3.1",
-        "-preset", "veryfast",
-        "-crf", "28",
-        "-movflags", "+faststart",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "96k", "-ac", "2",
-        str(tmp),
-    ]
-    # Audio is best-effort — some sources have unusual audio streams that
-    # ffmpeg's aac encoder refuses, and others (like the lavfi testsrc
-    # used in tests) have no audio at all. Retry without audio if the
-    # first pass fails before giving up.
-    res = subprocess.run(cmd_with_audio, capture_output=True, text=True, timeout=600)
-    if res.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        cmd_no_audio = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-i", str(video_path),
-            "-vf", "scale='min(854,iw)':-2",
-            "-c:v", "libx264",
-            "-profile:v", "baseline",
-            "-level", "3.1",
-            "-preset", "veryfast",
-            "-crf", "28",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            "-an",
-            str(tmp),
-        ]
-        res = subprocess.run(cmd_no_audio, capture_output=True, text=True, timeout=600)
-
-    if res.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        stderr = (res.stderr or "").strip().splitlines()[-1:] or [""]
-        raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
-
-    tmp.replace(dest)
 
 
 @router.put("/{slug}/sources/{idx}/segments")

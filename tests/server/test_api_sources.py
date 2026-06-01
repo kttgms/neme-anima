@@ -392,23 +392,32 @@ async def test_stream_serves_video_with_range_support(
     assert len(ranged.content) == 16
 
 
-async def test_preview_lazy_transcodes_and_caches(
+async def test_preview_serves_cached_mode_file_with_range(
     client, project: Project, tmp_path: Path,
 ):
-    """First /preview call kicks off ffmpeg; the result lands in .previews/."""
-    vid = tmp_path / "ep.mp4"
-    if not _make_synth_video(vid):
-        pytest.skip("ffmpeg unavailable for sample generation")
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    previews = project.root / ".previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    (previews / "ep.h264.mp4").write_bytes(b"0123456789ABCDEF" * 4)
 
-    resp = await client.get(f"/api/projects/{project.slug}/sources/0/preview")
-    assert resp.status_code == 200, resp.text
-    assert resp.headers["content-type"] == "video/mp4"
-    assert (project.root / ".previews" / "ep.mp4").is_file()
+    full = await client.get(f"/api/projects/{project.slug}/sources/0/preview?mode=h264")
+    assert full.status_code == 200
+    assert full.headers["content-type"] == "video/mp4"
 
-    # Second call serves the cached file (no transcode latency).
-    resp2 = await client.get(f"/api/projects/{project.slug}/sources/0/preview")
-    assert resp2.status_code == 200
+    ranged = await client.get(
+        f"/api/projects/{project.slug}/sources/0/preview?mode=h264",
+        headers={"Range": "bytes=0-7"},
+    )
+    assert ranged.status_code == 206
+    assert len(ranged.content) == 8
+
+
+async def test_preview_404_when_not_converted(client, project: Project, tmp_path: Path):
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    resp = await client.get(f"/api/projects/{project.slug}/sources/0/preview?mode=remux")
+    assert resp.status_code == 404
 
 
 # ---------------- frame capture ----------------
