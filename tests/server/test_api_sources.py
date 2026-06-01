@@ -439,6 +439,44 @@ async def test_preview_404_when_not_converted(client, project: Project, tmp_path
     assert resp.status_code == 404
 
 
+async def test_delete_preview_removes_cached_files(
+    client, project: Project, tmp_path: Path,
+):
+    """DELETE /preview removes the cached conversion(s) so they can be re-made."""
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    previews = project.root / ".previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    (previews / "ep.h264.mp4").write_bytes(b"FAKE")
+    (previews / "ep.remux.mp4").write_bytes(b"FAKE")
+
+    resp = await client.delete(f"/api/projects/{project.slug}/sources/0/preview")
+    assert resp.status_code == 200
+    assert sorted(resp.json()["removed"]) == ["h264", "remux"]
+    assert not (previews / "ep.h264.mp4").exists()
+    assert not (previews / "ep.remux.mp4").exists()
+
+    # Idempotent: deleting again removes nothing and doesn't error.
+    resp2 = await client.delete(f"/api/projects/{project.slug}/sources/0/preview")
+    assert resp2.status_code == 200
+    assert resp2.json()["removed"] == []
+
+
+async def test_delete_preview_single_mode(client, project: Project, tmp_path: Path):
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    previews = project.root / ".previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    (previews / "ep.h264.mp4").write_bytes(b"FAKE")
+    (previews / "ep.remux.mp4").write_bytes(b"FAKE")
+
+    resp = await client.delete(f"/api/projects/{project.slug}/sources/0/preview?mode=h264")
+    assert resp.status_code == 200
+    assert resp.json()["removed"] == ["h264"]
+    assert not (previews / "ep.h264.mp4").exists()
+    assert (previews / "ep.remux.mp4").exists()  # the other mode is untouched
+
+
 # ---------------- frame capture ----------------
 
 

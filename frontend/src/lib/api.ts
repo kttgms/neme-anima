@@ -129,6 +129,15 @@ export const getConvertStatus = (slug: string, idx: number, mode: ConvertMode) =
     `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/convert/status?mode=${mode}`,
   );
 
+/** Delete the cached converted preview(s) for a source. Omit `mode` to remove
+ *  both the remux and h264 caches. */
+export const deleteSourcePreview = (slug: string, idx: number, mode?: ConvertMode) =>
+  request<{ removed: ConvertMode[] }>(
+    `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/preview`
+      + (mode ? `?mode=${mode}` : ""),
+    { method: "DELETE" },
+  );
+
 export const getSourceDuration = (slug: string, idx: number) =>
   request<{ duration_seconds: number; fps: number; vcodec: string }>(
     `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/duration`,

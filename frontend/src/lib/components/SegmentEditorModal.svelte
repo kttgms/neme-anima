@@ -198,11 +198,12 @@
       .then((r) => {
         if (duration <= 0 && r.duration_seconds > 0) duration = r.duration_seconds;
         if (fps <= 0 && r.fps > 0) fps = r.fps;
-        // Proactively surface the Convert button when the browser can't decode
-        // the source codec. Such sources (HEVC in MKV) play black-with-audio and
-        // never fire a <video> error, so we can't wait for handleVideoError.
+        // When the browser can't decode the source codec (HEVC in MKV plays
+        // black-with-audio and never fires a <video> error), don't make the user
+        // re-convert every reopen — load a previously-cached conversion if one
+        // exists, otherwise surface the Convert button.
         if (!usingConverted && !needsConvert && !browserCanPlayCodec(r.vcodec)) {
-          needsConvert = true;
+          loadCachedOrPromptConvert(slug);
         }
       })
       .catch(() => {
@@ -298,6 +299,43 @@
     }
     convertState = "failed";
     convertError = "Conversion timed out";
+  }
+
+  /** On open of an undecodable source: if a conversion is already cached, play
+   *  it directly; otherwise show the Convert button. Avoids re-converting (or
+   *  even re-clicking) every time the editor is reopened. */
+  async function loadCachedOrPromptConvert(slug: string) {
+    try {
+      const st = await api.getConvertStatus(slug, sourceIdx, convertMode);
+      if (st.state === "ready") {
+        needsConvert = false;
+        convertState = "ready";
+        usingConverted = true;
+        videoSrc = `${api.sourcePreviewUrl(slug, sourceIdx, convertMode)}&t=${Date.now()}`;
+        return;
+      }
+    } catch {
+      // fall through to prompting a conversion
+    }
+    if (!usingConverted) needsConvert = true;
+  }
+
+  /** Delete the cached converted copy so it can be reclaimed / re-made, then
+   *  reset to the Convert prompt (the original still can't play). */
+  async function deletePreview() {
+    const slug = projectsStore.active?.slug;
+    if (!slug) return;
+    try {
+      await api.deleteSourcePreview(slug, sourceIdx);
+    } catch {
+      // Even if the delete failed server-side, reset the UI so the user can retry.
+    }
+    usingConverted = false;
+    convertState = "idle";
+    convertPct = 0;
+    triedH264Fallback = false;
+    needsConvert = true;
+    videoSrc = api.sourceStreamUrl(slug, sourceIdx);
   }
 
   // ---------------- segment math ----------------
@@ -747,6 +785,12 @@
   role="presentation"
   onclick={onClose}
 >
+  <!-- onclick only stops the backdrop's close-on-click from firing for clicks
+       inside the dialog; it isn't an interactive control. Keyboard close is
+       handled by handleKey (Escape) at the window level, so no keydown handler
+       is needed here — and adding one (stopPropagation) would block the
+       window-level shortcut handler. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     role="dialog"
     aria-modal="true"
@@ -754,7 +798,6 @@
     tabindex="-1"
     class="bg-ink-900 border border-ink-700 rounded-xl shadow-2xl p-5 max-w-4xl w-full mx-4 max-h-[92vh] overflow-y-auto"
     onclick={(e) => e.stopPropagation()}
-    onkeydown={(e) => e.stopPropagation()}
   >
     <div class="flex items-start justify-between mb-4">
       <div>
@@ -831,6 +874,14 @@
           Could not load video.<br />{convertError}<br />
           <span class="text-slate-400 text-xs mt-1">You can still edit segments by typing times below.</span>
         </div>
+      {/if}
+      {#if usingConverted}
+        <button
+          type="button"
+          onclick={deletePreview}
+          title="Delete the converted copy (frees disk; you can re-convert anytime)"
+          class="absolute top-2 right-2 z-10 px-2 py-1 rounded bg-ink-900/80 hover:bg-ink-800 text-slate-300 hover:text-white text-xs border border-ink-700"
+        >Delete preview</button>
       {/if}
     </div>
 

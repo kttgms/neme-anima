@@ -728,6 +728,34 @@ async def get_preview(
     return FileResponse(cache_path, media_type="video/mp4")
 
 
+@router.delete("/{slug}/sources/{idx}/preview")
+async def delete_preview(
+    request: Request, slug: str, idx: int, mode: str | None = None,
+) -> dict:
+    """Delete cached converted preview file(s) for a source.
+
+    Without ``mode`` both the ``remux`` and ``h264`` caches are removed; pass a
+    ``mode`` to drop just one. Also clears the in-memory job state so a later
+    ``/convert`` re-runs from scratch. Idempotent — returns the modes whose
+    files were actually present and removed.
+    """
+    if mode is not None and mode not in ("remux", "h264"):
+        raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
+    project = _load(request, slug)
+    if idx < 0 or idx >= len(project.sources):
+        raise HTTPException(status_code=404, detail="source index out of range")
+    video_path = Path(project.sources[idx].path)
+    modes = [mode] if mode else ["remux", "h264"]
+    removed: list[str] = []
+    for m in modes:
+        cache_path = _preview_cache_path(project, video_path, m)
+        if cache_path.exists():
+            cache_path.unlink(missing_ok=True)
+            removed.append(m)
+        _CONVERT_JOBS.pop((str(video_path.resolve()), m), None)
+    return {"removed": removed}
+
+
 def _convert_cmd(
     video_path: Path, dest: Path, mode: str, *, with_audio: bool,
 ) -> list[str]:
