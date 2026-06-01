@@ -90,8 +90,45 @@
   let videoEl: HTMLVideoElement | undefined = $state(undefined);
   let timelineEl: HTMLDivElement | undefined = $state(undefined);
 
+  // Play/pause mirrored from the element so the transport button can show the
+  // right glyph without polling.
+  let paused = $state<boolean>(true);
+
   let saving = $state(false);
   let saveError = $state<string>("");
+
+  // ---------------- frame capture ----------------
+
+  // Characters the captured frame can be routed to. The segment editor is a
+  // per-source dialog with no "active character" of its own, so when a project
+  // has more than one we let the user pick the destination; with a single
+  // character it routes there silently.
+  let captureChars = $derived(projectsStore.active?.characters ?? []);
+  // svelte-ignore state_referenced_locally
+  let captureCharSlug = $state<string>(
+    projectsStore.active?.characters?.[0]?.slug ?? "default",
+  );
+  $effect(() => {
+    // Keep the selection valid as the active project / character set changes;
+    // default to the first character when the current pick disappears.
+    const slugs = (projectsStore.active?.characters ?? []).map((c) => c.slug);
+    if (slugs.length && !slugs.includes(captureCharSlug)) {
+      captureCharSlug = slugs[0];
+    }
+  });
+
+  // Frames grabbed during this modal session. They're persisted server-side
+  // the instant they're captured (independent of the segment Save button), so
+  // this list is purely an in-modal confirmation strip — newest first.
+  let captures = $state<
+    { filename: string; characterSlug: string; time: number; llmError: string | null }[]
+  >([]);
+  let capturing = $state(false);
+  let captureError = $state<string>("");
+
+  // Whether an LLM caption is expected on each capture — drives the
+  // "WD14 + caption" vs "WD14" hint next to the capture button.
+  let llmEnabled = $derived(projectsStore.active?.llm?.enabled ?? false);
 
   // ---------------- url + duration boot ----------------
 
@@ -428,6 +465,104 @@
     }
   }
 
+  // ---------------- transport ----------------
+
+  /** Effective frame rate for frame-stepping. Falls back to 24 fps when the
+   *  source hasn't been probed (or reports nothing) so the step buttons still
+   *  move by a sensible increment instead of doing nothing. */
+  function fpsEffective(): number {
+    return fps > 0 ? fps : 24;
+  }
+
+  function togglePlay() {
+    if (!videoEl) return;
+    if (videoEl.paused) videoEl.play();
+    else videoEl.pause();
+  }
+
+  /** Seek by a relative number of seconds, clamped to the clip. */
+  function seekBy(deltaSeconds: number) {
+    if (!videoEl || duration <= 0) return;
+    const next = Math.max(0, Math.min(duration, videoEl.currentTime + deltaSeconds));
+    videoEl.currentTime = next;
+    playhead = next;
+  }
+
+  /** Step exactly one frame in ``dir`` (−1 / +1) and pause — frame-accurate
+   *  stepping only makes sense on a still image. We seek to the *middle* of the
+   *  target frame's display interval so the browser reliably decodes that frame
+   *  (landing exactly on a boundary is prone to off-by-one rounding), and use
+   *  ``floor()`` to recover the current frame index from that mid-frame time so
+   *  repeated steps don't drift. */
+  function stepFrame(dir: number) {
+    if (!videoEl || duration <= 0) return;
+    videoEl.pause();
+    const f = 1 / fpsEffective();
+    const cur = videoEl.currentTime;
+    const frame = Math.floor(cur / f + 1e-4);
+    const lastFrame = Math.max(0, Math.floor(duration / f - 1e-4));
+    const target = Math.max(0, Math.min(lastFrame, frame + dir));
+    const next = Math.min(duration, (target + 0.5) * f);
+    videoEl.currentTime = next;
+    playhead = next;
+  }
+
+  // ---------------- capture ----------------
+
+  let slug = $derived(projectsStore.active?.slug ?? "");
+
+  function captureThumbUrl(filename: string): string {
+    return slug ? api.frameImageUrl(slug, filename) : "";
+  }
+
+  /** Grab the frame at the current playhead, send it to the server (which
+   *  reads it full-resolution from the original file, WD14-tags it, and adds an
+   *  LLM caption when LLM tagging is enabled), and prepend it to the session
+   *  strip. Pauses first so the captured moment is locked and verifiable. */
+  async function capture() {
+    if (!slug || !videoEl || capturing || duration <= 0) return;
+    videoEl.pause();
+    const t = videoEl.currentTime;
+    capturing = true;
+    captureError = "";
+    try {
+      const { frame, llm_error } = await api.captureSourceFrame(slug, sourceIdx, {
+        time_seconds: t,
+        character_slug: captureCharSlug || undefined,
+      });
+      captures = [
+        {
+          filename: frame.filename,
+          characterSlug: frame.character_slug,
+          time: t,
+          llmError: llm_error,
+        },
+        ...captures,
+      ];
+      if (llm_error) {
+        captureError =
+          `Frame captured & WD14-tagged, but the LLM caption failed: ${llm_error}`;
+      }
+    } catch (e: any) {
+      captureError = e?.message || "Capture failed";
+    } finally {
+      capturing = false;
+    }
+  }
+
+  /** Remove a just-captured frame from the strip and delete it server-side. */
+  async function removeCapture(i: number) {
+    const cap = captures[i];
+    if (!cap || !slug) return;
+    captures = captures.filter((_, idx) => idx !== i);
+    try {
+      await api.deleteFrame(slug, cap.filename);
+    } catch {
+      /* Best-effort: the strip already dropped it; a stray file is harmless
+         and the Frames tab's delete can mop it up later. */
+    }
+  }
+
   // ---------------- keyboard ----------------
 
   function handleKey(e: KeyboardEvent) {
@@ -435,20 +570,53 @@
       onClose();
       return;
     }
+    // Don't hijack typing in the segment time inputs (or any future field).
+    const tgt = e.target as HTMLElement | null;
+    if (
+      tgt &&
+      (tgt.tagName === "INPUT" ||
+        tgt.tagName === "TEXTAREA" ||
+        tgt.isContentEditable)
+    ) {
+      return;
+    }
     if (!videoEl || duration <= 0) return;
-    const step = e.shiftKey ? 1 : 0.1;
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      videoEl.currentTime = Math.max(0, snap(videoEl.currentTime - step));
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      videoEl.currentTime = Math.min(duration, snap(videoEl.currentTime + step));
-    } else if (e.key === " ") {
-      e.preventDefault();
-      if (videoEl.paused) videoEl.play(); else videoEl.pause();
-    } else if (e.key === "[" || e.key === "]") {
-      e.preventDefault();
-      markAtPlayhead(e.key === "[" ? "start" : "end");
+    // preventDefault on every handled key also suppresses the <video>
+    // element's built-in key handling when it happens to be focused, so a key
+    // never fires twice (e.g. Space toggling play here *and* natively).
+    switch (e.key) {
+      case " ":
+      case "k":
+      case "K":
+        e.preventDefault();
+        togglePlay();
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        seekBy(e.shiftKey ? -1 : -5);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        seekBy(e.shiftKey ? 1 : 5);
+        break;
+      case ",":
+        e.preventDefault();
+        stepFrame(-1);
+        break;
+      case ".":
+        e.preventDefault();
+        stepFrame(1);
+        break;
+      case "[":
+      case "]":
+        e.preventDefault();
+        markAtPlayhead(e.key === "[" ? "start" : "end");
+        break;
+      case "c":
+      case "C":
+        e.preventDefault();
+        capture();
+        break;
     }
   }
 
@@ -510,7 +678,7 @@
     <div class="flex items-start justify-between mb-4">
       <div>
         <h2 id="segment-editor-title" class="text-base font-semibold text-slate-100">
-          Edit segments
+          Segments &amp; frame capture
         </h2>
         <p class="text-xs text-slate-500 truncate max-w-xl" title={source.path}>
           {basename}
@@ -545,6 +713,9 @@
           onerror={handleVideoError}
           onloadedmetadata={handleLoadedMetadata}
           ontimeupdate={handleTimeUpdate}
+          onseeked={handleTimeUpdate}
+          onplay={() => (paused = false)}
+          onpause={() => (paused = true)}
           class="w-full h-auto max-h-[50vh]"
         >
           <track kind="captions" />
@@ -562,6 +733,131 @@
         </div>
       {/if}
     </div>
+
+    <!-- Transport + capture bar. Mirrors the keyboard shortcuts as visible,
+         clickable controls so they're discoverable, and hosts the one-click
+         frame grab that feeds straight into the tagger. -->
+    <div class="flex flex-wrap items-center gap-2 mb-1">
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          onclick={() => seekBy(-5)}
+          disabled={duration <= 0}
+          title="Back 5 seconds (←)"
+          class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed tabular-nums"
+        >« 5s</button>
+        <button
+          type="button"
+          onclick={() => stepFrame(-1)}
+          disabled={duration <= 0}
+          title="Previous frame — pauses (,)"
+          class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >‹ frame</button>
+        <button
+          type="button"
+          onclick={togglePlay}
+          disabled={duration <= 0}
+          title="Play / pause (Space or K)"
+          aria-label={paused ? "Play" : "Pause"}
+          class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-200 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed w-9"
+        >{paused ? "▶" : "⏸"}</button>
+        <button
+          type="button"
+          onclick={() => stepFrame(1)}
+          disabled={duration <= 0}
+          title="Next frame — pauses (.)"
+          class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >frame ›</button>
+        <button
+          type="button"
+          onclick={() => seekBy(5)}
+          disabled={duration <= 0}
+          title="Forward 5 seconds (→)"
+          class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed tabular-nums"
+        >5s »</button>
+      </div>
+
+      <span class="text-[11px] text-slate-500 tabular-nums px-1">
+        {formatTime(playhead)} / {duration > 0 ? formatTime(duration) : "—"}
+      </span>
+
+      <!-- Capture group, pushed to the right. -->
+      <div class="flex items-center gap-2 ml-auto">
+        {#if captureChars.length > 1}
+          <label class="sr-only" for="capture-character">Capture target character</label>
+          <select
+            id="capture-character"
+            bind:value={captureCharSlug}
+            title="Character the captured frame is routed to"
+            class="px-2 py-1.5 text-xs rounded bg-ink-950 border border-ink-700 text-slate-200 focus:border-indigo-500 focus:outline-none max-w-[10rem]"
+          >
+            {#each captureChars as c (c.slug)}
+              <option value={c.slug}>{c.name}</option>
+            {/each}
+          </select>
+        {/if}
+        <button
+          type="button"
+          onclick={capture}
+          disabled={duration <= 0 || capturing}
+          title="Capture the current frame at full resolution and tag it (C)"
+          class="px-3 py-1.5 text-xs rounded inline-flex items-center gap-1.5 gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)] disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <span aria-hidden="true">📷</span>
+          {capturing ? "Capturing…" : "Capture frame"}
+        </button>
+      </div>
+    </div>
+    <p class="text-[10px] text-slate-600 mb-3 px-0.5">
+      Grabs the exact frame at the playhead, full-resolution from the source —
+      {llmEnabled ? "WD14-tagged + LLM caption" : "WD14-tagged"}, saved straight to
+      the Frames tab{captureChars.length <= 1 && captureChars[0]
+        ? ` (${captureChars[0].name})`
+        : ""}.
+    </p>
+
+    {#if captureError}
+      <p class="text-xs text-amber-300 mb-3 px-1">{captureError}</p>
+    {/if}
+
+    <!-- Frames captured in this session. They're persisted the instant they're
+         grabbed; this strip is just an in-modal confirmation + quick-undo. -->
+    {#if captures.length > 0}
+      <div class="mb-3">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          <span class="text-[11px] text-slate-400">
+            Captured this session
+            <span class="text-slate-200 tabular-nums">({captures.length})</span>
+          </span>
+          <span class="text-[10px] text-slate-600">
+            · already saved to the Frames tab — the Save button below only persists segments
+          </span>
+        </div>
+        <div class="flex gap-2 overflow-x-auto pb-1">
+          {#each captures as cap, i (cap.filename)}
+            <div class="relative flex-shrink-0 w-20 group">
+              <img
+                src={captureThumbUrl(cap.filename)}
+                alt="Captured frame at {formatTime(cap.time)}"
+                title="{cap.characterSlug} · {formatTime(cap.time)}{cap.llmError ? ' · caption failed' : ''}"
+                draggable="false"
+                class="w-20 h-12 object-cover rounded border border-ink-700 bg-ink-950 select-none"
+              />
+              <button
+                type="button"
+                onclick={() => removeCapture(i)}
+                title="Delete this captured frame"
+                aria-label="Delete captured frame"
+                class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-ink-900 border border-ink-600 text-slate-400 hover:text-red-400 hover:border-red-500 text-[11px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+              >✕</button>
+              <div class="text-[9px] text-slate-500 tabular-nums text-center mt-0.5 truncate">
+                {formatTime(cap.time)}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
 
     <!-- Timeline. Clicking + dragging on empty space creates a new
          segment; existing segments can be moved/resized with the handles. -->
@@ -670,7 +966,7 @@
         {/if}
       </span>
       <span class="hidden md:inline">
-        ←/→ seek 0.1s · Shift+←/→ 1s · Space play/pause · [ ] mark in/out · Esc cancel
+        ←/→ ±5s · Shift+←/→ ±1s · ,/. frame · Space/K play · C capture · [ ] mark in/out · Esc close
       </span>
     </div>
 

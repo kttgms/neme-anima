@@ -411,6 +411,157 @@ async def test_preview_lazy_transcodes_and_caches(
     assert resp2.status_code == 200
 
 
+# ---------------- frame capture ----------------
+
+
+class _FakeTagger:
+    """Stand-in for the WD14 model so capture tests don't load it."""
+
+    def tag(self, arr):  # noqa: ANN001, ARG002
+        class _R:
+            text = "1girl, smile"
+
+        return _R()
+
+
+async def test_capture_frame_saves_and_tags(
+    client, app, project: Project, tmp_path: Path,
+):
+    """End-to-end: ffmpeg grabs the frame, the shared ingest path WD14-tags it,
+    and it lands as a kept custom_uploads frame at full source resolution."""
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid, duration=4):
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+
+    app.state._tagger = _FakeTagger()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 1.0},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    fn = body["frame"]["filename"]
+    assert fn.startswith("custom_uploads__")
+    assert body["frame"]["character_slug"] == "default"
+    assert body["llm_error"] is None
+    # Timestamp provenance is carried through to the metadata row.
+    assert body["frame"]["timestamp_seconds"] == pytest.approx(1.0, abs=0.06)
+
+    png = project.kept_dir / f"{fn}.png"
+    txt = project.kept_dir / f"{fn}.txt"
+    assert png.is_file()
+    assert txt.read_text(encoding="utf-8").startswith("1girl, smile")
+
+    # Captured at native resolution (the synth clip is 160x120), not a thumbnail.
+    from PIL import Image
+
+    with Image.open(png) as im:
+        assert im.size == (160, 120)
+
+    # And it surfaces in the frames listing under the custom_uploads stem.
+    listing = await client.get(
+        f"/api/projects/{project.slug}/frames",
+        params={"source": "custom_uploads"},
+    )
+    assert any(f["filename"] == fn for f in listing.json()["items"])
+
+
+async def test_capture_frame_routes_to_named_character(
+    client, app, project: Project, tmp_path: Path,
+):
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid):
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    cresp = await client.post(
+        f"/api/projects/{project.slug}/characters", json={"name": "Mio"},
+    )
+    mio_slug = cresp.json()["slug"]
+
+    app.state._tagger = _FakeTagger()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 0.5, "character_slug": mio_slug},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["frame"]["character_slug"] == mio_slug
+
+
+async def test_capture_frame_runs_llm_when_enabled(
+    client, app, project: Project, tmp_path: Path, monkeypatch,
+):
+    """When LLM tagging is configured the caption pass runs and writes line 2."""
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid):
+        pytest.skip("ffmpeg unavailable for sample generation")
+
+    # Persist the LLM config *before* adding the source through the API.
+    # The API reloads the project from disk per request; saving the stale
+    # fixture object after the source was added would clobber it back off.
+    project.llm.enabled = True
+    project.llm.model = "fake-model"
+    project.llm.endpoint = "http://localhost:1234"
+    project.save()
+
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+
+    def fake_describe_image(
+        *, endpoint, model, image_path, prompt, danbooru_tags, api_key=None,
+    ):
+        return "A test pattern frame."
+
+    monkeypatch.setattr("neme_anima.llm.describe_image", fake_describe_image)
+
+    app.state._tagger = _FakeTagger()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 1.0},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["llm_error"] is None
+    fn = body["frame"]["filename"]
+    txt = (project.kept_dir / f"{fn}.txt").read_text(encoding="utf-8")
+    assert "A test pattern frame." in txt
+
+
+async def test_capture_frame_unknown_character_404(
+    client, project: Project, tmp_path: Path,
+):
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid):
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 1.0, "character_slug": "nope"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_capture_frame_404_for_bad_idx(client, project: Project):
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/99/capture-frame",
+        json={"time_seconds": 1.0},
+    )
+    assert resp.status_code == 404
+
+
+async def test_capture_frame_404_for_missing_video(
+    client, project: Project, tmp_path: Path,
+):
+    vid = tmp_path / "gone.mp4"
+    vid.write_bytes(b"x")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    vid.unlink()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 1.0},
+    )
+    assert resp.status_code == 404
+
+
 async def test_segments_404_for_bad_idx(client, project: Project):
     resp = await client.put(
         f"/api/projects/{project.slug}/sources/99/segments",

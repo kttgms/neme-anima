@@ -39,6 +39,19 @@ class PutSegmentsBody(BaseModel):
     segments: list[SegmentBody]
 
 
+class CaptureFrameBody(BaseModel):
+    """Body for the segment-editor's "grab this exact frame" button.
+
+    ``time_seconds`` is the playhead position the user picked in the browser
+    <video> element. ``character_slug`` (optional) routes the captured frame
+    to that character's bucket; omitted = the project's first character, the
+    same default the drag-and-drop upload route uses.
+    """
+
+    time_seconds: float
+    character_slug: str | None = None
+
+
 def _load(request: Request, slug: str) -> Project:
     entry = request.app.state.registry.get(slug)
     if entry is None:
@@ -330,6 +343,48 @@ def _extract_thumbnail(video_path: Path, dest: Path, *, max_side: int = 320) -> 
         raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
 
 
+def _extract_frame_at(video_path: Path, dest: Path, t_seconds: float) -> None:
+    """Grab the single frame at ``t_seconds`` as a full-resolution PNG via ffmpeg.
+
+    Unlike :func:`_extract_thumbnail`, no scaling is applied — a captured frame
+    goes straight into the training set, so it's kept at the source's native
+    resolution (the shared upload ingest path caps the longest side afterwards
+    if a source is unusually large).
+
+    Frame fidelity: a modern ffmpeg performs an *accurate* seek even with
+    ``-ss`` before ``-i`` — it fast-seeks to the keyframe before the target then
+    decodes forward to the exact timestamp — so this matches the frame the
+    browser shows at the same ``currentTime`` while staying fast on large files.
+    Stubborn files (broken indexes, or ``t`` past the last keyframe) get a
+    second pass with an output-side ``-ss``, which is slower but exact.
+    """
+    import shutil as _shutil
+    import subprocess
+
+    if _shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg not found on PATH")
+
+    t = max(0.0, float(t_seconds))
+
+    def _run(input_seek: bool) -> subprocess.CompletedProcess:
+        seek = ["-ss", f"{t:.3f}"]
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        if input_seek:
+            cmd += [*seek, "-i", str(video_path)]
+        else:
+            cmd += ["-i", str(video_path), *seek]
+        cmd += ["-frames:v", "1", str(dest)]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+    res = _run(input_seek=True)
+    if res.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        res = _run(input_seek=False)
+
+    if res.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        stderr = (res.stderr or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
+
+
 def _probe_duration_seconds(video_path: Path) -> float:
     """Return the video duration in seconds via ffprobe, or 0.0 if unknown."""
     import subprocess
@@ -429,6 +484,89 @@ async def get_duration(request: Request, slug: str, idx: int) -> dict:
     source.fps = fps
     project.save()
     return {"duration_seconds": duration, "fps": fps}
+
+
+@router.post("/{slug}/sources/{idx}/capture-frame", status_code=201)
+async def capture_frame(
+    request: Request, slug: str, idx: int, body: CaptureFrameBody,
+) -> dict:
+    """Grab the exact frame at ``time_seconds`` and register it as a kept frame.
+
+    The frame is WD14-tagged, and LLM-described when LLM tagging is enabled,
+    then routed to ``character_slug`` (default: the project's first character).
+
+    It reuses the same ingest path as the drag-and-drop upload route, so a
+    captured frame is indistinguishable from a manually-added one: it lands
+    under the ``custom_uploads`` stem and therefore survives a later
+    Extract / Re-process of this source — the user hand-picked it, so a re-scan
+    must not wipe it.
+
+    The frame is read from the *original* file at full resolution regardless of
+    whether the browser was playing the original stream or the 480p preview
+    fallback, so HEVC/MKV sources the browser can't decode still yield a crisp
+    training frame.
+    """
+    import tempfile
+
+    from neme_anima.server.api.frames import (
+        _get_or_make_tagger,
+        ingest_kept_image,
+    )
+
+    project = _load(request, slug)
+    if idx < 0 or idx >= len(project.sources):
+        raise HTTPException(status_code=404, detail="source index out of range")
+    source = project.sources[idx]
+    video_path = Path(source.path)
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
+
+    if (
+        body.character_slug not in (None, "")
+        and project.character_by_slug(body.character_slug) is None
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"unknown character: {body.character_slug}",
+        )
+    target_slug = (
+        body.character_slug if body.character_slug
+        else (project.characters[0].slug if project.characters else "default")
+    )
+
+    # Clamp the requested time into the clip. Use the cached duration when we
+    # have it, pulling back a hair from the very end so ffmpeg always has a
+    # frame to decode rather than landing past the last presentation timestamp.
+    t = max(0.0, float(body.time_seconds))
+    if source.duration_seconds and source.duration_seconds > 0:
+        t = min(t, max(0.0, source.duration_seconds - 0.05))
+
+    project.kept_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        tmp_png = Path(td) / "capture.png"
+        try:
+            await asyncio.to_thread(_extract_frame_at, video_path, tmp_png, t)
+        except Exception as e:
+            logger.exception("frame capture failed for %s @ %.3fs", video_path, t)
+            raise HTTPException(
+                status_code=500,
+                detail=f"frame capture failed: {type(e).__name__}: {e}",
+            )
+        data = tmp_png.read_bytes()
+
+    tagger = _get_or_make_tagger(request)
+    rec_dict, llm_error = await ingest_kept_image(
+        project,
+        data=data,
+        filename_hint=f"{video_path.stem}_capture",
+        target_slug=target_slug,
+        tagger=tagger,
+        timestamp_seconds=t,
+    )
+    if rec_dict is None:
+        raise HTTPException(
+            status_code=500, detail="could not process captured frame",
+        )
+    return {"frame": rec_dict, "llm_error": llm_error}
 
 
 @router.get("/{slug}/sources/{idx}/stream")

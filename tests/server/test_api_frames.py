@@ -89,6 +89,71 @@ async def test_list_filtered_by_source(client, project_with_frames: Project):
     assert body["items"][0]["filename"].startswith("ep02__")
 
 
+async def test_upload_frames_saves_and_tags(
+    client, app, project_with_frames: Project,
+):
+    """The drag-and-drop upload route shares ``ingest_kept_image`` with the
+    capture route: a dropped PNG is stored as a custom_uploads frame, WD14-
+    tagged, and shows up in the listing."""
+    import io as _io
+
+    class _FakeTagger:
+        def tag(self, arr):  # noqa: ANN001, ARG002
+            class _R:
+                text = "1girl, uploaded"
+
+            return _R()
+
+    app.state._tagger = _FakeTagger()
+
+    buf = _io.BytesIO()
+    Image.fromarray(np.full((24, 32, 3), 120, dtype=np.uint8)).save(buf, format="PNG")
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/upload",
+        files=[("files", ("drop.png", buf.getvalue(), "image/png"))],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["skipped"] == []
+    assert body["llm_error"] is None
+    assert len(body["added"]) == 1
+    fn = body["added"][0]["filename"]
+    assert fn.startswith("custom_uploads__")
+
+    txt = (project_with_frames.kept_dir / f"{fn}.txt").read_text(encoding="utf-8")
+    assert txt.startswith("1girl, uploaded")
+
+    listing = await client.get(
+        f"/api/projects/{project_with_frames.slug}/frames",
+        params={"source": "custom_uploads"},
+    )
+    assert any(f["filename"] == fn for f in listing.json()["items"])
+
+
+async def test_upload_frames_skips_empty_file(
+    client, app, project_with_frames: Project,
+):
+    """An empty part is reported as skipped, not added — preserved from the
+    pre-refactor upload loop."""
+
+    class _FakeTagger:
+        def tag(self, arr):  # noqa: ANN001, ARG002
+            class _R:
+                text = "x"
+
+            return _R()
+
+    app.state._tagger = _FakeTagger()
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/upload",
+        files=[("files", ("empty.png", b"", "image/png"))],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["added"] == []
+    assert body["skipped"] == ["empty.png"]
+
+
 async def test_get_tags(client, project_with_frames: Project):
     name = "ep01__s000_t001_f000010"
     resp = await client.get(f"/api/projects/{project_with_frames.slug}/frames/{name}/tags")

@@ -706,6 +706,104 @@ def _process_uploaded_image(
         return png_path, im.width, im.height, base
 
 
+async def ingest_kept_image(
+    project: Project,
+    *,
+    data: bytes,
+    filename_hint: str,
+    target_slug: str,
+    tagger,
+    timestamp_seconds: float = 0.0,
+) -> tuple[dict | None, str | None]:
+    """Decode, store, WD14-tag, optionally LLM-describe, and register one image
+    as a kept frame.
+
+    Shared by the drag-and-drop upload route and the segment-editor
+    frame-capture route so an image dropped from disk and a frame grabbed from
+    a video player land in the dataset by exactly the same path.
+
+    WD14 tagging always runs — that's the "tag it normally" behaviour the
+    extraction pipeline applies. The LLM description is a second pass gated on
+    the project having LLM tagging enabled with a model selected, matching the
+    pipeline and bulk-retag routes.
+
+    Returns ``(record_dict, llm_error)``. ``record_dict`` is ``None`` when the
+    bytes couldn't be decoded/saved — the caller treats that as a skip.
+    ``llm_error`` carries the human-readable reason the description was left
+    blank (so the UI can surface a one-line warning), or ``None``.
+    """
+    import numpy as np
+    from PIL import Image
+
+    try:
+        png_path, w, h, base = await asyncio.to_thread(
+            _process_uploaded_image, project, data, filename_hint,
+        )
+    except Exception:
+        return None, None
+
+    def _do_tag(p: Path) -> str:
+        with Image.open(p) as pim:
+            arr = np.array(pim.convert("RGB"))
+        return tagger.tag(arr).text
+
+    try:
+        tag_text = await asyncio.to_thread(_do_tag, png_path)
+    except Exception:
+        tag_text = ""
+
+    description = ""
+    llm_error: str | None = None
+    if project.llm.enabled and project.llm.model:
+        from neme_anima.llm import DEFAULT_PROMPT, LLMUnavailable, describe_image
+
+        def _do_describe() -> str:
+            return describe_image(
+                endpoint=project.llm.endpoint,
+                model=project.llm.model,
+                image_path=png_path,
+                prompt=project.llm.prompt or DEFAULT_PROMPT,
+                danbooru_tags=tag_text or None,
+                api_key=project.llm.api_key or None,
+            )
+
+        try:
+            description = await asyncio.to_thread(_do_describe)
+        except LLMUnavailable as exc:
+            # Endpoint reachable but unhappy (timeout, bad model id, auth
+            # refused). Log + remember so the user knows *why* line 2 is blank.
+            logger.warning("ingest.describe_failed file=%s: %s", filename_hint, exc)
+            llm_error = str(exc)
+            description = ""
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("ingest.describe_crashed file=%s", filename_hint)
+            llm_error = f"{type(exc).__name__}: {exc}"
+            description = ""
+
+    png_path.with_suffix(".txt").write_text(
+        join_sidecar(tag_text, description), encoding="utf-8",
+    )
+
+    rec = FrameRecord(
+        filename=base,
+        kept=True,
+        scene_idx=0,
+        tracklet_id=0,
+        frame_idx=0,
+        timestamp_seconds=float(timestamp_seconds),
+        bbox=(0, 0, w, h),
+        ccip_distance=0.0,
+        sharpness=0.0,
+        visibility=0.0,
+        aspect=(w / h) if h else 1.0,
+        score=0.0,
+        video_stem=CUSTOM_VIDEO_STEM,
+        character_slug=target_slug,
+    )
+    MetadataLog(project.metadata_path).append(rec)
+    return _record_to_dict(rec), llm_error
+
+
 @router.post("/{slug}/frames/upload")
 async def upload_frames(
     request: Request,
@@ -720,9 +818,6 @@ async def upload_frames(
     character — what the mono-character UI does today, and what dropping
     in the "All" view should do until CCIP-routing is wired in.
     """
-    import numpy as np
-    from PIL import Image
-
     project = _load(request, slug)
     if character_slug not in (None, "") and project.character_by_slug(character_slug) is None:
         raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
@@ -731,7 +826,6 @@ async def upload_frames(
         else (project.characters[0].slug if project.characters else "default")
     )
     project.kept_dir.mkdir(parents=True, exist_ok=True)
-    log = MetadataLog(project.metadata_path)
 
     added: list[dict] = []
     skipped: list[str] = []
@@ -750,81 +844,19 @@ async def upload_frames(
             if not data:
                 skipped.append(f.filename or "<empty>")
                 continue
-            try:
-                png_path, w, h, base = await asyncio.to_thread(
-                    _process_uploaded_image, project, data, f.filename or "drop",
-                )
-            except Exception:
+            rec_dict, err = await ingest_kept_image(
+                project,
+                data=data,
+                filename_hint=f.filename or "drop",
+                target_slug=target_slug,
+                tagger=tagger,
+            )
+            if rec_dict is None:
                 skipped.append(f.filename or "<unknown>")
                 continue
-
-            def _do_tag(p: Path) -> str:
-                with Image.open(p) as pim:
-                    arr = np.array(pim.convert("RGB"))
-                return tagger.tag(arr).text
-
-            try:
-                tag_text = await asyncio.to_thread(_do_tag, png_path)
-            except Exception:
-                tag_text = ""
-
-            description = ""
-            if project.llm.enabled and project.llm.model:
-                from neme_anima.llm import (
-                    DEFAULT_PROMPT, LLMUnavailable, describe_image,
-                )
-
-                def _do_describe() -> str:
-                    return describe_image(
-                        endpoint=project.llm.endpoint,
-                        model=project.llm.model,
-                        image_path=png_path,
-                        prompt=project.llm.prompt or DEFAULT_PROMPT,
-                        danbooru_tags=tag_text or None,
-                        api_key=project.llm.api_key or None,
-                    )
-
-                try:
-                    description = await asyncio.to_thread(_do_describe)
-                except LLMUnavailable as exc:
-                    # Endpoint reachable but unhappy (timeout, bad model id,
-                    # auth refused). Log and remember so the user knows
-                    # *why* their dropped image came back without line 2.
-                    logger.warning(
-                        "upload.describe_failed file=%s: %s",
-                        f.filename or "<unknown>", exc,
-                    )
-                    llm_error = str(exc)
-                    description = ""
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception(
-                        "upload.describe_crashed file=%s",
-                        f.filename or "<unknown>",
-                    )
-                    llm_error = f"{type(exc).__name__}: {exc}"
-                    description = ""
-            png_path.with_suffix(".txt").write_text(
-                join_sidecar(tag_text, description), encoding="utf-8",
-            )
-
-            rec = FrameRecord(
-                filename=base,
-                kept=True,
-                scene_idx=0,
-                tracklet_id=0,
-                frame_idx=0,
-                timestamp_seconds=0.0,
-                bbox=(0, 0, w, h),
-                ccip_distance=0.0,
-                sharpness=0.0,
-                visibility=0.0,
-                aspect=(w / h) if h else 1.0,
-                score=0.0,
-                video_stem=CUSTOM_VIDEO_STEM,
-                character_slug=target_slug,
-            )
-            log.append(rec)
-            added.append(_record_to_dict(rec))
+            if err:
+                llm_error = err
+            added.append(rec_dict)
         finally:
             await f.close()
 
