@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -455,6 +456,13 @@ _VIDEO_MIME_BY_SUFFIX = {
 # plain dict is sufficient; no need for a cross-process lock file.
 _PREVIEW_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Per-(path, mode) conversion job state, read by /convert/status. Mutated
+# from the worker thread (plain dict writes are GIL-atomic) and from the
+# request handler. Background tasks are held in _CONVERT_TASKS so the event
+# loop doesn't garbage-collect them mid-run.
+_CONVERT_JOBS: dict[tuple[str, str], dict[str, Any]] = {}
+_CONVERT_TASKS: set[asyncio.Task] = set()
+
 
 @router.get("/{slug}/sources/{idx}/duration")
 async def get_duration(request: Request, slug: str, idx: int) -> dict:
@@ -596,6 +604,77 @@ async def stream_source(
     )
 
 
+def _preview_cache_path(project: Project, video_path: Path, mode: str) -> Path:
+    return project.root / ".previews" / f"{video_path.stem}.{mode}.mp4"
+
+
+@router.post("/{slug}/sources/{idx}/convert")
+async def convert_source(
+    request: Request, slug: str, idx: int, mode: str = "h264",
+) -> dict:
+    """Kick off (or no-op join) a playback conversion for the given mode.
+
+    Returns immediately with the job state; the browser polls
+    :func:`convert_status` for progress and then loads :func:`get_preview`.
+    Concurrent identical calls are idempotent — a running job is left alone and
+    a finished cache file short-circuits.
+    """
+    if mode not in ("remux", "h264"):
+        raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
+    project = _load(request, slug)
+    if idx < 0 or idx >= len(project.sources):
+        raise HTTPException(status_code=404, detail="source index out of range")
+    video_path = Path(project.sources[idx].path)
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
+
+    cache_path = _preview_cache_path(project, video_path, mode)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    key = (str(video_path.resolve()), mode)
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        _CONVERT_JOBS[key] = {"state": "ready", "pct": 100.0, "mode": mode, "error": ""}
+        return _CONVERT_JOBS[key]
+
+    job = _CONVERT_JOBS.get(key)
+    if job and job["state"] == "running":
+        return job
+
+    _CONVERT_JOBS[key] = {"state": "running", "pct": 0.0, "mode": mode, "error": ""}
+    duration = await asyncio.to_thread(_probe_duration_seconds, video_path)
+    task = asyncio.create_task(
+        asyncio.to_thread(_run_convert_job, key, video_path, cache_path, mode, duration),
+    )
+    _CONVERT_TASKS.add(task)
+    task.add_done_callback(_CONVERT_TASKS.discard)
+    return _CONVERT_JOBS[key]
+
+
+@router.get("/{slug}/sources/{idx}/convert/status")
+async def convert_status(
+    request: Request, slug: str, idx: int, mode: str = "h264",
+) -> dict:
+    """Report conversion progress: {state, pct, mode, error}.
+
+    A present cache file always reads as ``ready`` (covers a server restart
+    that dropped the in-memory job state). Otherwise the live job state, or
+    ``idle`` if nothing was ever started for this (source, mode).
+    """
+    if mode not in ("remux", "h264"):
+        raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
+    project = _load(request, slug)
+    if idx < 0 or idx >= len(project.sources):
+        raise HTTPException(status_code=404, detail="source index out of range")
+    video_path = Path(project.sources[idx].path)
+    cache_path = _preview_cache_path(project, video_path, mode)
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return {"state": "ready", "pct": 100.0, "mode": mode, "error": ""}
+    key = (str(video_path.resolve()), mode)
+    return _CONVERT_JOBS.get(
+        key, {"state": "idle", "pct": 0.0, "mode": mode, "error": ""},
+    )
+
+
 @router.get("/{slug}/sources/{idx}/preview")
 async def get_preview(
     request: Request, slug: str, idx: int,
@@ -696,6 +775,87 @@ def _convert_cmd(
         cmd += ["-an"]
     cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(dest)]
     return cmd
+
+
+def _run_one_ffmpeg(
+    cmd: list[str], key: tuple[str, str], duration: float, *, timeout: float = 900.0,
+) -> tuple[int, str]:
+    """Run one ffmpeg invocation, streaming -progress to update job pct.
+
+    Returns (returncode, last_stderr). Parses ``out_time_us`` lines against the
+    probed duration to produce a 0..100 percentage; a duration of 0 (unprobeable
+    source) just leaves pct at 0 and the bar reads as indeterminate.
+    """
+    import subprocess
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        if proc.stdout is not None:
+            for raw in proc.stdout:
+                line = raw.strip()
+                if line.startswith("out_time_us=") and duration > 0:
+                    try:
+                        us = int(line.split("=", 1)[1])
+                    except ValueError:
+                        continue
+                    pct = min(100.0, max(0.0, us / 1_000_000.0 / duration * 100.0))
+                    job = _CONVERT_JOBS.get(key)
+                    if job is not None:
+                        job["pct"] = pct
+        rc = proc.wait(timeout=timeout)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    stderr = (proc.stderr.read() if proc.stderr else "") or ""
+    return rc, stderr
+
+
+def _transcode_for_playback(
+    video_path: Path, dest: Path, mode: str, duration: float, key: tuple[str, str],
+) -> None:
+    """Convert ``video_path`` to ``dest`` for the given mode, tmp-then-rename.
+
+    Audio is best-effort: some sources have audio streams ffmpeg's aac encoder
+    refuses (and lavfi test sources have none), so a failed first pass retries
+    with ``-an`` before giving up.
+    """
+    import shutil as _shutil
+
+    if _shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg not found on PATH")
+
+    tmp = dest.with_name(dest.stem + ".tmp" + dest.suffix)
+    rc, stderr = _run_one_ffmpeg(
+        _convert_cmd(video_path, tmp, mode, with_audio=True), key, duration,
+    )
+    if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        rc, stderr = _run_one_ffmpeg(
+            _convert_cmd(video_path, tmp, mode, with_audio=False), key, duration,
+        )
+    if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        last = (stderr or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"ffmpeg failed (rc={rc}): {last[0][:300]}")
+    tmp.replace(dest)
+
+
+def _run_convert_job(
+    key: tuple[str, str], video_path: Path, dest: Path, mode: str, duration: float,
+) -> None:
+    """Worker-thread entrypoint: run the transcode and record terminal state."""
+    try:
+        _transcode_for_playback(video_path, dest, mode, duration, key)
+        _CONVERT_JOBS[key] = {"state": "ready", "pct": 100.0, "mode": mode, "error": ""}
+    except Exception as e:  # noqa: BLE001 — terminal state must always be recorded
+        logger.exception("convert failed for %s (mode=%s)", video_path, mode)
+        prev = _CONVERT_JOBS.get(key) or {}
+        _CONVERT_JOBS[key] = {
+            "state": "failed", "pct": prev.get("pct", 0.0),
+            "mode": mode, "error": f"{type(e).__name__}: {e}",
+        }
 
 
 def _transcode_preview(video_path: Path, dest: Path) -> None:

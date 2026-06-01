@@ -619,3 +619,86 @@ def test_convert_cmd_remux_without_audio_keeps_video_copy():
     assert "copy" in cmd and "hvc1" in cmd    # video still copied losslessly
     assert "aac" not in cmd                   # no audio encoder when -an
     assert "-map" in cmd and "0:v:0" in cmd   # video stream still explicitly mapped
+
+
+# ---------------- convert endpoints ----------------
+
+import asyncio as _asyncio
+
+
+async def _wait_convert_ready(client, slug, mode, *, tries=100):
+    """Poll /convert/status until ready/failed. Returns the final body."""
+    for _ in range(tries):
+        s = await client.get(
+            f"/api/projects/{slug}/sources/0/convert/status?mode={mode}",
+        )
+        body = s.json()
+        if body["state"] in ("ready", "failed"):
+            return body
+        await _asyncio.sleep(0.1)
+    return {"state": "timeout", "pct": 0.0}
+
+
+async def test_convert_h264_produces_cached_mp4_and_reaches_ready(
+    client, project: Project, tmp_path: Path,
+):
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid):
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+
+    started = await client.post(
+        f"/api/projects/{project.slug}/sources/0/convert?mode=h264",
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["state"] in ("running", "ready")
+
+    final = await _wait_convert_ready(client, project.slug, "h264")
+    assert final["state"] == "ready", final
+    assert 0.0 <= final["pct"] <= 100.0
+    assert (project.root / ".previews" / "ep.h264.mp4").is_file()
+
+
+async def test_convert_rejects_bad_mode(client, project: Project, tmp_path: Path):
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/convert?mode=av1",
+    )
+    assert resp.status_code == 400
+
+
+async def test_convert_404_when_file_missing(client, project: Project, tmp_path: Path):
+    vid = tmp_path / "gone.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    vid.unlink()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/convert?mode=h264",
+    )
+    assert resp.status_code == 404
+
+
+async def test_convert_status_idle_before_start(client, project: Project, tmp_path: Path):
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    resp = await client.get(
+        f"/api/projects/{project.slug}/sources/0/convert/status?mode=h264",
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "idle"
+
+
+async def test_convert_cached_file_short_circuits(
+    client, project: Project, tmp_path: Path,
+):
+    """A pre-existing cache file means /convert returns ready without ffmpeg."""
+    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+    previews = project.root / ".previews"
+    previews.mkdir(parents=True, exist_ok=True)
+    (previews / "ep.h264.mp4").write_bytes(b"FAKEMP4DATA")
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/convert?mode=h264",
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "ready"
