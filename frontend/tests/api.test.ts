@@ -84,4 +84,35 @@ describe("api client", () => {
     ) as any;
     await expect(api.getProject("nope")).rejects.toThrow(/404/);
   });
+
+  it("sourcePreviewUrl includes the mode query param", () => {
+    expect(api.sourcePreviewUrl("p", 0, "remux")).toBe(
+      "/api/projects/p/sources/0/preview?mode=remux",
+    );
+  });
+
+  it("convertSource POSTs /convert with the mode", async () => {
+    const mock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ state: "running", pct: 0, mode: "h264", error: "" }), { status: 200 }),
+    );
+    globalThis.fetch = mock as any;
+    await api.convertSource("p", 0, "h264");
+    expect(mock).toHaveBeenCalledWith(
+      "/api/projects/p/sources/0/convert?mode=h264",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("getConvertStatus GETs /convert/status with the mode", async () => {
+    const mock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ state: "ready", pct: 100, mode: "remux", error: "" }), { status: 200 }),
+    );
+    globalThis.fetch = mock as any;
+    const r = await api.getConvertStatus("p", 0, "remux");
+    expect(r.state).toBe("ready");
+    expect(mock).toHaveBeenCalledWith(
+      "/api/projects/p/sources/0/convert/status?mode=remux",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });

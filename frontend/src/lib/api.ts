@@ -100,12 +100,34 @@ export const sourceThumbnailUrl = (slug: string, idx: number) =>
 export const sourceStreamUrl = (slug: string, idx: number) =>
   `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/stream`;
 
-/** URL of a 480p H.264 transcode of the source. Backend generates this
- *  lazily on first request and caches it; while transcoding the endpoint
- *  returns 202 with `Retry-After`, and the modal re-polls every couple
- *  of seconds until it flips to 200. */
-export const sourcePreviewUrl = (slug: string, idx: number) =>
-  `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/preview`;
+export type ConvertMode = "remux" | "h264";
+
+export interface ConvertStatus {
+  state: "idle" | "running" | "ready" | "failed";
+  pct: number;
+  mode: ConvertMode;
+  error: string;
+}
+
+/** URL of a converted, web-playable MP4 for the given mode. The file is
+ *  produced by {@link convertSource}; this URL only serves it (404 until
+ *  conversion has run). `remux` is a lossless HEVC rewrap, `h264` a 480p
+ *  transcode. */
+export const sourcePreviewUrl = (slug: string, idx: number, mode: ConvertMode) =>
+  `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/preview?mode=${mode}`;
+
+/** Kick off a playback conversion. Returns the initial job state; poll
+ *  {@link getConvertStatus} for progress. */
+export const convertSource = (slug: string, idx: number, mode: ConvertMode) =>
+  request<ConvertStatus>(
+    `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/convert?mode=${mode}`,
+    { method: "POST" },
+  );
+
+export const getConvertStatus = (slug: string, idx: number, mode: ConvertMode) =>
+  request<ConvertStatus>(
+    `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/convert/status?mode=${mode}`,
+  );
 
 export const getSourceDuration = (slug: string, idx: number) =>
   request<{ duration_seconds: number; fps: number }>(
