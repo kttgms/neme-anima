@@ -785,12 +785,20 @@ def _run_one_ffmpeg(
     Returns (returncode, last_stderr). Parses ``out_time_us`` lines against the
     probed duration to produce a 0..100 percentage; a duration of 0 (unprobeable
     source) just leaves pct at 0 and the bar reads as indeterminate.
+
+    A wall-clock kill-timer bounds a hung encode: reading ``proc.stdout`` to EOF
+    blocks until ffmpeg exits, so a plain ``wait(timeout=)`` can never fire while
+    the loop is stuck. The timer kills the process at the deadline, which closes
+    stdout and lets the loop (then ``wait``) return.
     """
     import subprocess
+    import threading
 
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
     try:
         if proc.stdout is not None:
             for raw in proc.stdout:
@@ -804,10 +812,12 @@ def _run_one_ffmpeg(
                     job = _CONVERT_JOBS.get(key)
                     if job is not None:
                         job["pct"] = pct
-        rc = proc.wait(timeout=timeout)
+        rc = proc.wait()
     finally:
+        killer.cancel()
         if proc.poll() is None:
             proc.kill()
+            proc.wait()
     stderr = (proc.stderr.read() if proc.stderr else "") or ""
     return rc, stderr
 
@@ -827,19 +837,23 @@ def _transcode_for_playback(
         raise RuntimeError("ffmpeg not found on PATH")
 
     tmp = dest.with_name(dest.stem + ".tmp" + dest.suffix)
-    rc, stderr = _run_one_ffmpeg(
-        _convert_cmd(video_path, tmp, mode, with_audio=True), key, duration,
-    )
-    if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
-        tmp.unlink(missing_ok=True)
+    try:
         rc, stderr = _run_one_ffmpeg(
-            _convert_cmd(video_path, tmp, mode, with_audio=False), key, duration,
+            _convert_cmd(video_path, tmp, mode, with_audio=True), key, duration,
         )
-    if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            tmp.unlink(missing_ok=True)
+            rc, stderr = _run_one_ffmpeg(
+                _convert_cmd(video_path, tmp, mode, with_audio=False), key, duration,
+            )
+        if rc != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            tmp.unlink(missing_ok=True)
+            last = (stderr or "").strip().splitlines()[-1:] or [""]
+            raise RuntimeError(f"ffmpeg failed (rc={rc}): {last[0][:300]}")
+        tmp.replace(dest)
+    except BaseException:
         tmp.unlink(missing_ok=True)
-        last = (stderr or "").strip().splitlines()[-1:] or [""]
-        raise RuntimeError(f"ffmpeg failed (rc={rc}): {last[0][:300]}")
-    tmp.replace(dest)
+        raise
 
 
 def _run_convert_job(
