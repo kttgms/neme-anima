@@ -78,14 +78,20 @@
   // loops.
   let playhead = $state<number>(0);
 
-  // Two URLs: try the original stream first. If the browser can't decode
-  // the container/codec, the error handler swaps to the lazy-transcoded
-  // 480p preview. The preview URL stays bound to the polling status so
-  // we can show "preparing" feedback if the backend is still encoding.
+  // Player source: the original stream first. If the browser can't decode it,
+  // we show a manual "Convert for playback" button rather than auto-transcoding
+  // — conversion is explicit and shows progress. `remux` (lossless HEVC rewrap)
+  // is used when the browser can decode HEVC; `h264` (480p transcode) otherwise.
+  // Captured/extracted frames always read the original at full resolution, so
+  // the on-screen quality here never affects the dataset.
   let videoSrc = $state<string>("");
-  let usingPreview = $state(false);
-  let previewStatus = $state<"idle" | "preparing" | "ready" | "failed">("idle");
-  let previewError = $state<string>("");
+  let usingConverted = $state(false);
+  let convertMode = $state<"remux" | "h264">("h264");
+  let needsConvert = $state(false);
+  let convertState = $state<"idle" | "running" | "ready" | "failed">("idle");
+  let convertPct = $state(0);
+  let convertError = $state<string>("");
+  let triedH264Fallback = $state(false);
 
   let videoEl: HTMLVideoElement | undefined = $state(undefined);
   let timelineEl: HTMLDivElement | undefined = $state(undefined);
@@ -132,13 +138,31 @@
 
   // ---------------- url + duration boot ----------------
 
+  /** Pick the conversion mode from what the browser can decode. If it can play
+   *  HEVC in MP4 we only need a lossless rewrap (remux); otherwise we must
+   *  re-encode to H.264. canPlayType can over-report HEVC, so handleVideoError
+   *  falls back to h264 if a remux still won't play. */
+  function detectConvertMode(): "remux" | "h264" {
+    try {
+      const v = document.createElement("video");
+      const canHevc = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"') !== "";
+      return canHevc ? "remux" : "h264";
+    } catch {
+      return "h264";
+    }
+  }
+
   $effect(() => {
     const slug = projectsStore.active?.slug;
     if (!slug) return;
     videoSrc = api.sourceStreamUrl(slug, sourceIdx);
-    usingPreview = false;
-    previewStatus = "idle";
-    previewError = "";
+    usingConverted = false;
+    needsConvert = false;
+    convertState = "idle";
+    convertPct = 0;
+    convertError = "";
+    triedH264Fallback = false;
+    convertMode = detectConvertMode();
 
     // Always refresh duration from the server — the first time this is
     // hit for a given source it triggers an ffprobe; subsequent times it
@@ -169,54 +193,74 @@
     playhead = videoEl.currentTime;
   }
 
-  /** Browser refused to decode the original stream (HEVC, exotic codec,
-   *  unsupported container). Switch to the transcoded preview. The /preview
-   *  endpoint either returns the cached MP4 (200) or kicks off ffmpeg and
-   *  returns 202 — we probe with a HEAD-style fetch first so we can show
-   *  "preparing" feedback before the <video> element starts spamming
-   *  errors against an endpoint that isn't ready yet. */
-  async function handleVideoError() {
-    if (usingPreview) {
-      // Both stream and preview failed — surface the error.
-      if (previewStatus !== "failed") {
-        previewStatus = "failed";
-        previewError = "Could not load video preview";
+  /** The original stream failed to decode (HEVC/exotic codec/unsupported
+   *  container) — or a converted file did. Show the Convert button, or fall
+   *  back from remux to h264 once if the browser lied about HEVC support. */
+  function handleVideoError() {
+    if (usingConverted) {
+      if (convertMode === "remux" && !triedH264Fallback) {
+        triedH264Fallback = true;
+        convertMode = "h264";
+        usingConverted = false;
+        needsConvert = true;
+        convertState = "idle";
+        return;
+      }
+      if (convertState !== "failed") {
+        convertState = "failed";
+        convertError = "Could not play the converted video.";
       }
       return;
     }
-    const slug = projectsStore.active?.slug;
-    if (!slug) return;
-    usingPreview = true;
-    previewStatus = "preparing";
-    await pollPreviewReady(slug);
+    needsConvert = true;
+    convertState = "idle";
   }
 
-  async function pollPreviewReady(slug: string) {
-    const url = api.sourcePreviewUrl(slug, sourceIdx);
-    // Up to two minutes of polling — ffmpeg on a long source can take
-    // tens of seconds. After that we give up and tell the user.
-    for (let i = 0; i < 60; i++) {
-      try {
-        const resp = await fetch(url, { method: "GET", headers: { Range: "bytes=0-0" } });
-        if (resp.status === 200 || resp.status === 206) {
-          previewStatus = "ready";
-          // Cache-bust so the <video> element doesn't show a stale 202
-          // response cached by the browser when it first tried to load.
-          videoSrc = `${url}?t=${Date.now()}`;
-          return;
-        }
-        if (resp.status !== 202) {
-          previewStatus = "failed";
-          previewError = `Preview endpoint returned ${resp.status}`;
-          return;
-        }
-      } catch (e) {
-        // Transient network error — try again.
-      }
-      await new Promise((r) => setTimeout(r, 2000));
+  async function startConvert() {
+    const slug = projectsStore.active?.slug;
+    if (!slug) return;
+    needsConvert = false;
+    convertState = "running";
+    convertPct = 0;
+    convertError = "";
+    try {
+      await api.convertSource(slug, sourceIdx, convertMode);
+    } catch (e) {
+      convertState = "failed";
+      convertError = e instanceof Error ? e.message : String(e);
+      return;
     }
-    previewStatus = "failed";
-    previewError = "Preview did not become ready in time";
+    await pollConvert(slug);
+  }
+
+  /** Poll convert status ~1s up to ~10min — an H.264 transcode of a
+   *  feature-length source is slow; the remux is fast but I/O-bound off
+   *  /mnt/c under WSL. */
+  async function pollConvert(slug: string) {
+    for (let i = 0; i < 600; i++) {
+      let s;
+      try {
+        s = await api.getConvertStatus(slug, sourceIdx, convertMode);
+      } catch {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      convertPct = s.pct ?? 0;
+      if (s.state === "ready") {
+        convertState = "ready";
+        usingConverted = true;
+        videoSrc = `${api.sourcePreviewUrl(slug, sourceIdx, convertMode)}&t=${Date.now()}`;
+        return;
+      }
+      if (s.state === "failed") {
+        convertState = "failed";
+        convertError = s.error || "Conversion failed";
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    convertState = "failed";
+    convertError = "Conversion timed out";
   }
 
   // ---------------- segment math ----------------
@@ -721,14 +765,33 @@
           <track kind="captions" />
         </video>
       {/if}
-      {#if usingPreview && previewStatus === "preparing"}
-        <div class="absolute inset-0 flex items-center justify-center bg-ink-950/80 text-slate-300 text-sm">
-          Preparing video preview… (transcoding for browser playback)
+      {#if needsConvert}
+        <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/85 text-slate-300 text-sm px-4 text-center">
+          <span>This video's format can't play directly in your browser.</span>
+          <span class="text-slate-400 text-xs">
+            Captured frames are always saved at the original full resolution.
+          </span>
+          <button
+            type="button"
+            onclick={startConvert}
+            class="mt-1 px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-sm"
+          >
+            {triedH264Fallback ? "Re-encode to H.264" : "Convert for playback"}
+          </button>
         </div>
       {/if}
-      {#if previewStatus === "failed"}
-        <div class="absolute inset-0 flex items-center justify-center bg-ink-950/80 text-amber-300 text-sm px-4 text-center">
-          Could not load video.<br />{previewError}<br />
+      {#if convertState === "running"}
+        <div class="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/85 text-slate-300 text-sm px-6 text-center">
+          <span>{convertMode === "remux" ? "Preparing video…" : "Transcoding for playback…"}</span>
+          <div class="w-2/3 h-1.5 bg-ink-800 rounded overflow-hidden">
+            <div class="h-full bg-sky-500 transition-[width]" style="width: {Math.max(2, convertPct)}%"></div>
+          </div>
+          <span class="text-slate-400 text-xs">{Math.round(convertPct)}%</span>
+        </div>
+      {/if}
+      {#if convertState === "failed"}
+        <div class="absolute inset-0 flex flex-col items-center justify-center bg-ink-950/85 text-amber-300 text-sm px-4 text-center">
+          Could not load video.<br />{convertError}<br />
           <span class="text-slate-400 text-xs mt-1">You can still edit segments by typing times below.</span>
         </div>
       {/if}
