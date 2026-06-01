@@ -504,8 +504,8 @@ async def capture_frame(
     must not wipe it.
 
     The frame is read from the *original* file at full resolution regardless of
-    whether the browser was playing the original stream or the 480p preview
-    fallback, so HEVC/MKV sources the browser can't decode still yield a crisp
+    whether the browser was playing the original stream or a converted preview,
+    so HEVC/MKV sources the browser can't decode still yield a crisp
     training frame.
     """
     import tempfile
@@ -581,8 +581,9 @@ async def stream_source(
     out-of-the-box, so we just point at the file and set a reasonable
     ``Content-Type`` derived from the suffix. The frontend tries this
     endpoint first; if the browser can't decode the container/codec
-    (HEVC in MKV being the common case for anime sources) it falls back
-    to :func:`get_preview` which transcodes a web-playable copy.
+    (HEVC in MKV being the common case for anime sources) the frontend
+    triggers :func:`convert_source` (POST /convert) to produce a
+    web-playable copy and then serves it via :func:`get_preview`.
     """
     project = _load(request, slug)
     if idx < 0 or idx >= len(project.sources):
@@ -700,8 +701,8 @@ def _convert_cmd(
 
     ``remux`` copies the (HEVC) video stream bit-for-bit into MP4 — zero
     quality loss, near-instant — for browsers that can decode HEVC. ``h264``
-    re-encodes to a small 480p H.264 baseline stream (the old throwaway-preview
-    recipe) for browsers that can't. Both stream progress on stdout via
+    re-encodes to a small 480p H.264 baseline stream for browsers that can't
+    decode HEVC. Both stream progress on stdout via
     ``-progress pipe:1`` so the caller can compute a percentage.
     """
     cmd = [
