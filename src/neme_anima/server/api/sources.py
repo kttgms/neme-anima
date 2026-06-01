@@ -438,6 +438,30 @@ def _probe_fps(video_path: Path) -> float:
         return 0.0
 
 
+def _probe_vcodec(video_path: Path) -> str:
+    """Return the source's primary video codec name via ffprobe, lowercased
+    (e.g. ``"hevc"``, ``"h264"``, ``"av1"``), or ``""`` if unknown.
+
+    The segment editor uses this to decide up-front whether the browser can
+    decode the original: a codec the browser can't decode (HEVC on most
+    Chrome/Firefox) plays as a black frame *with* audio and never fires a
+    ``<video>`` error event, so we can't rely on ``onerror`` to surface the
+    Convert button — we check the codec instead.
+    """
+    import subprocess
+
+    res = subprocess.run(
+        ["ffprobe", "-v", "error",
+         "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name",
+         "-of", "default=nw=1:nokey=1",
+         str(video_path)],
+        capture_output=True, text=True, timeout=15,
+    )
+    lines = (res.stdout or "").strip().splitlines()
+    return lines[0].strip().lower() if lines else ""
+
+
 _VIDEO_MIME_BY_SUFFIX = {
     ".mp4": "video/mp4",
     ".m4v": "video/mp4",
@@ -460,9 +484,12 @@ _CONVERT_TASKS: set[asyncio.Task] = set()
 
 @router.get("/{slug}/sources/{idx}/duration")
 async def get_duration(request: Request, slug: str, idx: int) -> dict:
-    """Return ``{duration_seconds, fps}`` for the source's video.
+    """Return ``{duration_seconds, fps, vcodec}`` for the source's video.
 
-    Cached on the Source record after the first probe so the segment
+    ``vcodec`` lets the segment editor tell up-front whether the browser can
+    decode the original (an undecodable codec like HEVC plays black-with-audio
+    and never fires a ``<video>`` error). Cached on the Source after first probe
+    so the segment
     editor doesn't pay a fresh ffprobe round-trip on every open. The probe
     falls through to legacy values (0.0) if ffprobe fails — better than a
     500 for a transient ffmpeg issue when the user just wants to look at
@@ -472,20 +499,27 @@ async def get_duration(request: Request, slug: str, idx: int) -> dict:
     if idx < 0 or idx >= len(project.sources):
         raise HTTPException(status_code=404, detail="source index out of range")
     source = project.sources[idx]
-    if source.duration_seconds is not None and source.fps is not None:
+    if (
+        source.duration_seconds is not None
+        and source.fps is not None
+        and source.vcodec is not None
+    ):
         return {
             "duration_seconds": source.duration_seconds,
             "fps": source.fps,
+            "vcodec": source.vcodec,
         }
     video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
     duration = await asyncio.to_thread(_probe_duration_seconds, video_path)
     fps = await asyncio.to_thread(_probe_fps, video_path)
+    vcodec = await asyncio.to_thread(_probe_vcodec, video_path)
     source.duration_seconds = duration
     source.fps = fps
+    source.vcodec = vcodec
     project.save()
-    return {"duration_seconds": duration, "fps": fps}
+    return {"duration_seconds": duration, "fps": fps, "vcodec": vcodec}
 
 
 @router.post("/{slug}/sources/{idx}/capture-frame", status_code=201)

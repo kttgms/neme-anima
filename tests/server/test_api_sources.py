@@ -260,6 +260,25 @@ async def test_duration_returns_and_caches(
     assert reloaded.sources[0].fps == body["fps"]
 
 
+async def test_duration_reports_and_caches_vcodec(
+    client, project: Project, tmp_path: Path,
+):
+    """``/duration`` returns the source's video codec and caches it so the
+    segment editor can tell up-front whether the browser can play the original."""
+    vid = tmp_path / "ep.mp4"
+    if not _make_synth_video(vid):  # libx264 -> codec_name "h264"
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+
+    resp = await client.get(f"/api/projects/{project.slug}/sources/0/duration")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["vcodec"] == "h264"
+
+    # Cached on the source and survives reload.
+    reloaded = Project.load(project.root)
+    assert reloaded.sources[0].vcodec == "h264"
+
+
 async def test_put_segments_persists_and_merges(
     client, project: Project, tmp_path: Path,
 ):

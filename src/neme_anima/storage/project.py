@@ -107,6 +107,7 @@ class Source:
     segments: list[Segment] = field(default_factory=list)
     duration_seconds: float | None = None
     fps: float | None = None
+    vcodec: str | None = None         # primary video codec (e.g. "hevc"), cached
 
 
 @dataclass
@@ -457,6 +458,7 @@ class Project:
                     float(duration_raw) if duration_raw is not None else None
                 ),
                 fps=float(fps_raw) if fps_raw is not None else None,
+                vcodec=s.get("vcodec"),
             ))
         return out
 

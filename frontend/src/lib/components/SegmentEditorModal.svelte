@@ -152,6 +152,31 @@
     }
   }
 
+  /** Whether this browser can decode the source's video codec well enough to
+   *  render the original. HEVC/AV1 are probed via canPlayType; common codecs
+   *  (h264, vp8/9) are assumed playable. This is what lets us surface the
+   *  Convert button up-front: an undecodable codec plays black-with-audio and
+   *  never fires a <video> error event, so onerror alone isn't enough. */
+  function browserCanPlayCodec(vcodec: string | undefined): boolean {
+    if (!vcodec) return true; // unknown — let the element try; onerror/videoWidth backstop
+    const v = document.createElement("video");
+    const can = (t: string) => v.canPlayType(t) !== "";
+    switch (vcodec.toLowerCase()) {
+      case "hevc":
+      case "h265":
+        return can('video/mp4; codecs="hvc1.1.6.L93.B0"')
+          || can('video/mp4; codecs="hev1.1.6.L93.B0"');
+      case "av1":
+        return can('video/mp4; codecs="av01.0.05M.08"');
+      case "vp9":
+        return can('video/webm; codecs="vp9"') || can('video/mp4; codecs="vp09.00.10.08"');
+      case "vp8":
+        return can('video/webm; codecs="vp8"');
+      default:
+        return true; // h264/avc1 and friends — universally playable
+    }
+  }
+
   $effect(() => {
     const slug = projectsStore.active?.slug;
     if (!slug) return;
@@ -173,6 +198,12 @@
       .then((r) => {
         if (duration <= 0 && r.duration_seconds > 0) duration = r.duration_seconds;
         if (fps <= 0 && r.fps > 0) fps = r.fps;
+        // Proactively surface the Convert button when the browser can't decode
+        // the source codec. Such sources (HEVC in MKV) play black-with-audio and
+        // never fire a <video> error, so we can't wait for handleVideoError.
+        if (!usingConverted && !needsConvert && !browserCanPlayCodec(r.vcodec)) {
+          needsConvert = true;
+        }
       })
       .catch(() => {
         // Non-fatal — the <video> element will tell us the duration once
@@ -185,6 +216,12 @@
     if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
       // <video>.duration is the authoritative number once decoding starts.
       duration = videoEl.duration;
+    }
+    // Backstop for the "audio plays, video is black, no error event" case: the
+    // container loaded but the video track has no decodable dimensions. Catches
+    // codecs the proactive check in the boot effect missed.
+    if (!usingConverted && videoEl.videoWidth === 0 && videoEl.videoHeight === 0) {
+      needsConvert = true;
     }
   }
 

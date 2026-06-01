@@ -130,7 +130,7 @@ export const getConvertStatus = (slug: string, idx: number, mode: ConvertMode) =
   );
 
 export const getSourceDuration = (slug: string, idx: number) =>
-  request<{ duration_seconds: number; fps: number }>(
+  request<{ duration_seconds: number; fps: number; vcodec: string }>(
     `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/duration`,
   );
 
