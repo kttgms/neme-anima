@@ -150,17 +150,16 @@ export const saveSourceSegments = (
   { method: "PUT", body: JSON.stringify({ segments }) },
 );
 
-/** Grab the exact frame at ``time_seconds`` from the source video and register
- *  it as a kept frame — WD14-tagged, plus an LLM caption when LLM tagging is
- *  enabled — routed to ``character_slug`` (default: the project's first
- *  character). The frame is read server-side from the original file at full
- *  resolution, so it stays crisp even when the player fell back to the 480p
- *  preview for an undecodable codec. ``llm_error`` is non-null when the WD14
- *  tag landed but the LLM caption pass failed. */
+/** Grab the exact frame from the source video and register it as a kept frame.
+ *  When ``frame_idx`` is present the server extracts that decoded frame number;
+ *  otherwise it falls back to ``time_seconds``. The frame is WD14-tagged, plus
+ *  an LLM caption when enabled, and routed to ``character_slug`` (default: the
+ *  project's first character). It is read from the original file at full
+ *  resolution, so it stays crisp even when the player uses a 480p preview. */
 export const captureSourceFrame = (
   slug: string,
   idx: number,
-  body: { time_seconds: number; character_slug?: string },
+  body: { time_seconds: number; frame_idx?: number; character_slug?: string },
 ) => request<{ frame: FrameRecord; llm_error: string | null }>(
   `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/capture-frame`,
   { method: "POST", body: JSON.stringify(body) },

@@ -533,6 +533,56 @@ async def test_capture_frame_saves_and_tags(
     assert any(f["filename"] == fn for f in listing.json()["items"])
 
 
+def _make_gray_sequence_video(dest: Path, *, fps: int = 5, frames: int = 4) -> bool:
+    import shutil as _shutil
+    import subprocess
+
+    if _shutil.which("ffmpeg") is None:
+        return False
+
+    from PIL import Image
+
+    seq_dir = dest.parent / f"{dest.stem}_frames"
+    seq_dir.mkdir()
+    for i in range(frames):
+        gray = i * 50
+        Image.new("RGB", (64, 64), (gray, gray, gray)).save(seq_dir / f"{i:03d}.png")
+    res = subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-framerate", str(fps), "-i", str(seq_dir / "%03d.png"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(dest),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return res.returncode == 0 and dest.exists()
+
+
+async def test_capture_frame_uses_frame_idx_when_provided(
+    client, app, project: Project, tmp_path: Path,
+):
+    """Frame-step captures send the intended decoded frame index, not just time."""
+    vid = tmp_path / "indexed.mp4"
+    if not _make_gray_sequence_video(vid):
+        pytest.skip("ffmpeg unavailable for sample generation")
+    await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
+
+    app.state._tagger = _FakeTagger()
+    resp = await client.post(
+        f"/api/projects/{project.slug}/sources/0/capture-frame",
+        json={"time_seconds": 0.0, "frame_idx": 2},
+    )
+    assert resp.status_code == 201, resp.text
+
+    from PIL import Image
+
+    fn = resp.json()["frame"]["filename"]
+    with Image.open(project.kept_dir / f"{fn}.png") as im:
+        center_gray = im.convert("RGB").getpixel((32, 32))[0]
+    assert center_gray == pytest.approx(100, abs=8)
+
+
 async def test_capture_frame_routes_to_named_character(
     client, app, project: Project, tmp_path: Path,
 ):

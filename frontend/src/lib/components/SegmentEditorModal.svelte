@@ -626,6 +626,13 @@
     playhead = next;
   }
 
+  function frameIndexForTime(seconds: number): number | undefined {
+    if (fps <= 0 || duration <= 0) return undefined;
+    const f = 1 / fps;
+    const lastFrame = Math.max(0, Math.floor(duration / f - 1e-4));
+    return Math.max(0, Math.min(lastFrame, Math.floor(seconds / f + 1e-4)));
+  }
+
   // ---------------- capture ----------------
 
   let slug = $derived(projectsStore.active?.slug ?? "");
@@ -641,12 +648,15 @@
   async function capture() {
     if (!slug || !videoEl || capturing || duration <= 0) return;
     videoEl.pause();
-    const t = videoEl.currentTime;
     capturing = true;
     captureError = "";
     try {
+      await waitForPendingSeek(videoEl);
+      const t = videoEl.currentTime;
+      const frameIdx = frameIndexForTime(t);
       const { frame, llm_error } = await api.captureSourceFrame(slug, sourceIdx, {
         time_seconds: t,
+        ...(frameIdx === undefined ? {} : { frame_idx: frameIdx }),
         character_slug: captureCharSlug || undefined,
       });
       captures = [
@@ -667,6 +677,34 @@
     } finally {
       capturing = false;
     }
+  }
+
+  async function waitForPendingSeek(video: HTMLVideoElement): Promise<void> {
+    if (!video.seeking) return;
+    await new Promise<void>((resolve, reject) => {
+      let done = false;
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("seeked", handleSeeked);
+        video.removeEventListener("error", handleError);
+      };
+      const finish = (error?: Error) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const handleSeeked = () => finish();
+      const handleError = () => finish(new Error("Could not load the preview frame."));
+      const timeout = window.setTimeout(
+        () => finish(new Error("Timed out waiting for the preview frame.")),
+        5000,
+      );
+      video.addEventListener("seeked", handleSeeked, { once: true });
+      video.addEventListener("error", handleError, { once: true });
+    });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
 
   /** Remove a just-captured frame from the strip and delete it server-side. */

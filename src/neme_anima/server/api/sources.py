@@ -44,12 +44,16 @@ class CaptureFrameBody(BaseModel):
     """Body for the segment-editor's "grab this exact frame" button.
 
     ``time_seconds`` is the playhead position the user picked in the browser
-    <video> element. ``character_slug`` (optional) routes the captured frame
-    to that character's bucket; omitted = the project's first character, the
-    same default the drag-and-drop upload route uses.
+    <video> element and is stored as timestamp provenance. ``frame_idx`` is the
+    optional zero-based decoded frame number; the frontend sends it when source
+    fps is known so frame-step captures don't depend on ffmpeg timestamp seek
+    rounding. ``character_slug`` (optional) routes the captured frame to that
+    character's bucket; omitted = the project's first character, the same
+    default the drag-and-drop upload route uses.
     """
 
     time_seconds: float
+    frame_idx: int | None = None
     character_slug: str | None = None
 
 
@@ -386,6 +390,30 @@ def _extract_frame_at(video_path: Path, dest: Path, t_seconds: float) -> None:
         raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
 
 
+def _extract_frame_by_index(video_path: Path, dest: Path, frame_idx: int) -> None:
+    """Grab a single decoded video frame by zero-based frame index."""
+    import shutil as _shutil
+    import subprocess
+
+    if _shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg not found on PATH")
+    if frame_idx < 0:
+        raise ValueError("frame_idx must be non-negative")
+
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+        "-i", str(video_path),
+        "-vf", f"select=eq(n\\,{frame_idx})",
+        "-vsync", "0",
+        "-frames:v", "1",
+        str(dest),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if res.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        stderr = (res.stderr or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
+
+
 def _probe_duration_seconds(video_path: Path) -> float:
     """Return the video duration in seconds via ffprobe, or 0.0 if unknown."""
     import subprocess
@@ -526,7 +554,7 @@ async def get_duration(request: Request, slug: str, idx: int) -> dict:
 async def capture_frame(
     request: Request, slug: str, idx: int, body: CaptureFrameBody,
 ) -> dict:
-    """Grab the exact frame at ``time_seconds`` and register it as a kept frame.
+    """Grab the requested frame and register it as a kept frame.
 
     The frame is WD14-tagged, and LLM-described when LLM tagging is enabled,
     then routed to ``character_slug`` (default: the project's first character).
@@ -575,18 +603,25 @@ async def capture_frame(
     t = max(0.0, float(body.time_seconds))
     if source.duration_seconds and source.duration_seconds > 0:
         t = min(t, max(0.0, source.duration_seconds - 0.05))
+    if body.frame_idx is not None and body.frame_idx < 0:
+        raise HTTPException(status_code=400, detail="frame_idx must be non-negative")
 
     project.kept_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as td:
         tmp_png = Path(td) / "capture.png"
         try:
-            await asyncio.to_thread(_extract_frame_at, video_path, tmp_png, t)
+            if body.frame_idx is None:
+                await asyncio.to_thread(_extract_frame_at, video_path, tmp_png, t)
+            else:
+                await asyncio.to_thread(
+                    _extract_frame_by_index, video_path, tmp_png, body.frame_idx,
+                )
         except Exception as e:
             logger.exception("frame capture failed for %s @ %.3fs", video_path, t)
             raise HTTPException(
                 status_code=500,
                 detail=f"frame capture failed: {type(e).__name__}: {e}",
-            )
+            ) from e
         data = tmp_png.read_bytes()
 
     tagger = _get_or_make_tagger(request)
