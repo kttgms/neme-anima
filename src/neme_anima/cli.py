@@ -127,6 +127,44 @@ def project_rerun(
     run_rerun(project=p, video_stem=video)
 
 
+@project_app.command("tag-loras")
+def project_tag_loras(
+    project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    run_name: str | None = typer.Option(
+        None, "--run", help="Training run name to tag; default = all runs.",
+    ),
+) -> None:
+    """Embed neme-anima provenance metadata into saved LoRA safetensors."""
+    import json as _json
+
+    from neme_anima import training as training_lib
+
+    p = Project.load(project_dir)
+    if run_name is not None:
+        run_dirs = [p.training_runs_dir / run_name]
+        if not run_dirs[0].is_dir():
+            console.print(f"[red]error:[/red] unknown run: {run_name}")
+            raise typer.Exit(code=1)
+    elif p.training_runs_dir.is_dir():
+        run_dirs = sorted(d for d in p.training_runs_dir.iterdir() if d.is_dir())
+    else:
+        run_dirs = []
+
+    tagged: list[str] = []
+    try:
+        for run_dir in run_dirs:
+            tagged.extend(training_lib.tag_run_safetensors(p, run_dir))
+    except training_lib.SafetensorsMetadataError as e:
+        console.print(f"[red]error:[/red] {e}")
+        raise typer.Exit(code=2) from e
+    print(_json.dumps({
+        "project": p.slug,
+        "runs_checked": [d.name for d in run_dirs],
+        "tagged_count": len(tagged),
+        "tagged_files": tagged,
+    }, indent=2))
+
+
 @app.command()
 def ui(
     host: str = typer.Option("127.0.0.1", help="Bind address."),

@@ -429,8 +429,9 @@ class TrainingManager:
             if project is not None:
                 _persist_state(project, state)
 
-        # Apply checkpoint retention now that the run is over.
-        if state is not None and self._cfg_snapshot is not None:
+        # Apply checkpoint retention now that the run is over, then tag the
+        # remaining LoRA files with neme-anima provenance metadata.
+        if state is not None and project is not None and self._cfg_snapshot is not None:
             try:
                 deleted = training_lib.prune_checkpoints(
                     Path(state.run_dir),
@@ -443,6 +444,17 @@ class TrainingManager:
                     )
             except Exception:
                 logger.exception("training: prune_checkpoints failed")
+            try:
+                tagged = training_lib.tag_run_safetensors(
+                    project, Path(state.run_dir),
+                )
+                if tagged:
+                    logger.info(
+                        "training: tagged %d LoRA safetensors in %s",
+                        len(tagged), state.run_dir,
+                    )
+            except Exception:
+                logger.exception("training: tag_run_safetensors failed")
 
         await self._broadcast_status()
         self._close_log_file()

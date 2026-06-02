@@ -18,11 +18,14 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
+import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
-from typing import Iterable
 
 from neme_anima.storage.project import CROP_SUFFIX, Project, TrainingConfig
 
@@ -62,6 +65,10 @@ class PathCheck:
     is_file: bool
     is_dir: bool
     error: str | None = None
+
+
+class SafetensorsMetadataError(ValueError):
+    """Raised when a file cannot be safely parsed as safetensors."""
 
 
 # ----- path validation -------------------------------------------------------
@@ -954,6 +961,200 @@ def latest_checkpoint(run_dir: Path) -> CheckpointInfo | None:
     """Most recent checkpoint, or None if there are none."""
     cps = discover_checkpoints(run_dir)
     return cps[-1] if cps else None
+
+
+# ----- safetensors provenance tagging ----------------------------------------
+
+
+def _file_sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    h = sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _nearest_file(candidates: Iterable[Path]) -> Path | None:
+    return next((p for p in candidates if p.is_file()), None)
+
+
+def _checkpoint_weights_path(checkpoint_dir: Path) -> Path | None:
+    preferred = checkpoint_dir / "adapter_model.safetensors"
+    if preferred.is_file():
+        return preferred
+    return next(iter(sorted(checkpoint_dir.glob("*.safetensors"))), None)
+
+
+def _read_safetensors_header(path: Path) -> tuple[dict, int]:
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            raw_len = f.read(8)
+            if len(raw_len) != 8:
+                raise SafetensorsMetadataError(
+                    f"{path} is too short to contain a safetensors header",
+                )
+            header_len = struct.unpack("<Q", raw_len)[0]
+            if header_len <= 0 or header_len > size - 8:
+                raise SafetensorsMetadataError(
+                    f"{path} has an invalid safetensors header length",
+                )
+            raw_header = f.read(header_len)
+    except OSError as e:
+        raise SafetensorsMetadataError(f"could not read {path}: {e}") from e
+
+    try:
+        header = json.loads(raw_header)
+    except json.JSONDecodeError as e:
+        raise SafetensorsMetadataError(
+            f"{path} does not contain a valid JSON safetensors header",
+        ) from e
+    if not isinstance(header, dict):
+        raise SafetensorsMetadataError(
+            f"{path} safetensors header must be a JSON object",
+        )
+    return header, header_len
+
+
+def _rewrite_safetensors_header(path: Path, header: dict, old_header_len: int) -> None:
+    try:
+        stat = path.stat()
+    except OSError as e:
+        raise SafetensorsMetadataError(f"could not stat {path}: {e}") from e
+
+    header_bytes = json.dumps(
+        header, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")
+    tmp_name: str | None = None
+    try:
+        with open(path, "rb") as src, tempfile.NamedTemporaryFile(
+            "wb", dir=path.parent, prefix=f".{path.name}.", delete=False,
+        ) as tmp:
+            tmp_name = tmp.name
+            src.seek(8 + old_header_len)
+            tmp.write(struct.pack("<Q", len(header_bytes)))
+            tmp.write(header_bytes)
+            shutil.copyfileobj(src, tmp, length=1024 * 1024)
+        os.chmod(tmp_name, stat.st_mode)
+        os.replace(tmp_name, path)
+    except OSError as e:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise SafetensorsMetadataError(f"could not rewrite {path}: {e}") from e
+
+
+def tag_safetensors_metadata(path: Path, metadata: dict[str, str]) -> bool:
+    """Merge string metadata into a safetensors file without loading tensors.
+
+    Returns True when the file was rewritten. Tensor byte ranges stay unchanged
+    because safetensors ``data_offsets`` are relative to the post-header buffer,
+    not absolute file offsets.
+    """
+    path = Path(path)
+    header, old_header_len = _read_safetensors_header(path)
+    raw_existing = header.get("__metadata__", {})
+    if raw_existing is None:
+        raw_existing = {}
+    if not isinstance(raw_existing, dict):
+        raise SafetensorsMetadataError(
+            f"{path} safetensors __metadata__ must be a JSON object",
+        )
+    existing = {str(k): str(v) for k, v in raw_existing.items()}
+    additions = {str(k): str(v) for k, v in metadata.items()}
+    additions.setdefault(
+        "neme_anima_tagged_at",
+        datetime.now(timezone.utc).isoformat(),
+    )
+    merged = {**existing, **additions}
+    if existing == merged:
+        return False
+    header["__metadata__"] = merged
+    _rewrite_safetensors_header(path, header, old_header_len)
+    return True
+
+
+def build_safetensors_provenance_metadata(
+    project: Project,
+    *,
+    run_dir: Path,
+    checkpoint_dir: Path,
+) -> dict[str, str]:
+    """Metadata embedded in exported/finished LoRA files for provenance."""
+    from neme_anima import __version__
+
+    run_dir = Path(run_dir)
+    checkpoint_dir = Path(checkpoint_dir)
+    run_toml = _nearest_file((
+        checkpoint_dir / "run.toml",
+        checkpoint_dir.parent / "run.toml",
+        run_dir / "run.toml",
+    ))
+    dataset_toml = _nearest_file((
+        checkpoint_dir / "dataset.toml",
+        checkpoint_dir.parent / "dataset.toml",
+        run_dir / "dataset.toml",
+    ))
+    cfg = project.training
+    out = {
+        "neme_anima": "true",
+        "neme_anima_schema": "1",
+        "neme_anima_generated_by": "neme-anima",
+        "neme_anima_version": __version__,
+        "neme_anima_project_slug": project.slug,
+        "neme_anima_project_name": project.name,
+        "neme_anima_run_name": run_dir.name,
+        "neme_anima_checkpoint": checkpoint_dir.name,
+        "neme_anima_trainer": "diffusion-pipe",
+        "neme_anima_model_type": "anima",
+        "neme_anima_adapter_type": "lora",
+        "neme_anima_rank": str(cfg.rank),
+        "neme_anima_caption_mode": cfg.caption_mode,
+    }
+    trigger = (cfg.trigger_token or "").strip()
+    if trigger:
+        out["neme_anima_trigger_token"] = trigger
+    if run_toml is not None:
+        out["neme_anima_run_toml_sha256"] = _file_sha256(run_toml) or ""
+    if dataset_toml is not None:
+        out["neme_anima_dataset_toml_sha256"] = _file_sha256(dataset_toml) or ""
+    return out
+
+
+def tag_checkpoint_safetensors(
+    project: Project,
+    *,
+    run_dir: Path,
+    checkpoint_dir: Path,
+) -> Path | None:
+    """Tag one checkpoint's LoRA safetensors and return its path if changed."""
+    checkpoint_dir = Path(checkpoint_dir)
+    weights = _checkpoint_weights_path(checkpoint_dir)
+    if weights is None:
+        return None
+    changed = tag_safetensors_metadata(
+        weights,
+        build_safetensors_provenance_metadata(
+            project, run_dir=run_dir, checkpoint_dir=checkpoint_dir,
+        ),
+    )
+    return weights if changed else None
+
+
+def tag_run_safetensors(project: Project, run_dir: Path) -> list[str]:
+    """Tag every discovered LoRA checkpoint in ``run_dir``."""
+    changed: list[str] = []
+    for cp in discover_checkpoints(run_dir):
+        path = tag_checkpoint_safetensors(
+            project, run_dir=Path(run_dir), checkpoint_dir=Path(cp.path),
+        )
+        if path is not None:
+            changed.append(str(path.resolve()))
+    return changed
 
 
 def prune_checkpoints(

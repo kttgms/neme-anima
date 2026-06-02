@@ -368,7 +368,8 @@ async def export_checkpoint(
     subdir: str = "",
 ) -> FileResponse:
     """Stream a checkpoint's LoRA ``.safetensors`` as a project-named download.
-    Non-destructive — the on-disk file keeps its original name."""
+    The on-disk file keeps its original name, but is tagged with neme-anima
+    provenance metadata before streaming."""
     # ``subdir`` is the diffusion-pipe sub-run-dir nesting this checkpoint
     # (empty for direct children of ``run_dir``); mirrors delete_checkpoint.
     project = _load_or_404(request, slug)
@@ -399,6 +400,15 @@ async def export_checkpoint(
                 detail="no .safetensors file in this checkpoint",
             )
         weights = candidates[0]
+    try:
+        training_lib.tag_safetensors_metadata(
+            weights,
+            training_lib.build_safetensors_provenance_metadata(
+                project, run_dir=run_dir, checkpoint_dir=ckpt_dir,
+            ),
+        )
+    except training_lib.SafetensorsMetadataError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
     stem = _sanitize_filename(project.name) or project.slug
     download_name = f"{stem}-{ckpt_name}.safetensors"
     return FileResponse(

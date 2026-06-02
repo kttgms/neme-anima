@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,22 @@ from neme_anima.cli import app
 from neme_anima.storage.project import Project
 
 runner = CliRunner()
+
+
+def _write_tiny_safetensors(path: Path) -> None:
+    header = {
+        "__metadata__": {"format": "pt"},
+        "weight": {"dtype": "U8", "shape": [4], "data_offsets": [0, 4]},
+    }
+    raw_header = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    path.write_bytes(struct.pack("<Q", len(raw_header)) + raw_header + b"DATA")
+
+
+def _read_safetensors_metadata(path: Path) -> dict[str, str]:
+    with open(path, "rb") as f:
+        header_len = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(header_len))
+    return header["__metadata__"]
 
 
 def test_project_create_makes_folder(tmp_path: Path):
@@ -51,6 +68,26 @@ def test_project_create_rejects_existing(tmp_path: Path):
     target.mkdir()
     result = runner.invoke(app, ["project", "create", str(target), "--name", "x"])
     assert result.exit_code != 0
+
+
+def test_project_tag_loras_tags_existing_run(tmp_path: Path):
+    project = Project.create(tmp_path / "p", name="Project Name")
+    ckpt = project.training_runs_dir / "run1" / "epoch1"
+    ckpt.mkdir(parents=True)
+    weights = ckpt / "adapter_model.safetensors"
+    _write_tiny_safetensors(weights)
+
+    result = runner.invoke(
+        app, ["project", "tag-loras", str(project.root), "--run", "run1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["tagged_count"] == 1
+    meta = _read_safetensors_metadata(weights)
+    assert meta["neme_anima_generated_by"] == "neme-anima"
+    assert meta["neme_anima_project_name"] == "Project Name"
+    assert meta["neme_anima_checkpoint"] == "epoch1"
 
 
 def _seed_src_with_character(src_root: Path) -> None:
