@@ -390,7 +390,38 @@ def _extract_frame_at(video_path: Path, dest: Path, t_seconds: float) -> None:
         raise RuntimeError(f"ffmpeg failed (rc={res.returncode}): {stderr[0][:300]}")
 
 
-def _extract_frame_by_index(video_path: Path, dest: Path, frame_idx: int) -> None:
+_FRAME_INDEX_SEEK_PREROLL_SECONDS = 1.0
+
+
+def _frame_index_seek_plan(
+    frame_idx: int,
+    *,
+    fps: float | None,
+    t_seconds: float | None,
+) -> tuple[float, int]:
+    """Return ``(seek_seconds, local_frame_idx)`` for fast frame-index capture."""
+    if frame_idx < 0:
+        raise ValueError("frame_idx must be non-negative")
+
+    fps_value = float(fps or 0.0)
+    if fps_value <= 0 and t_seconds is not None and t_seconds > 0 and frame_idx > 0:
+        fps_value = frame_idx / float(t_seconds)
+    if fps_value <= 0:
+        return 0.0, frame_idx
+
+    preroll_frames = max(1, int(round(fps_value * _FRAME_INDEX_SEEK_PREROLL_SECONDS)))
+    seek_frame = max(0, frame_idx - preroll_frames)
+    return seek_frame / fps_value, frame_idx - seek_frame
+
+
+def _extract_frame_by_index(
+    video_path: Path,
+    dest: Path,
+    frame_idx: int,
+    *,
+    fps: float | None = None,
+    t_seconds: float | None = None,
+) -> None:
     """Grab a single decoded video frame by zero-based frame index."""
     import shutil as _shutil
     import subprocess
@@ -400,10 +431,15 @@ def _extract_frame_by_index(video_path: Path, dest: Path, frame_idx: int) -> Non
     if frame_idx < 0:
         raise ValueError("frame_idx must be non-negative")
 
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+    seek_seconds, local_frame_idx = _frame_index_seek_plan(
+        frame_idx, fps=fps, t_seconds=t_seconds,
+    )
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
+    if seek_seconds > 0:
+        cmd += ["-ss", f"{seek_seconds:.3f}"]
+    cmd += [
         "-i", str(video_path),
-        "-vf", f"select=eq(n\\,{frame_idx})",
+        "-vf", f"select=eq(n\\,{local_frame_idx})",
         "-vsync", "0",
         "-frames:v", "1",
         str(dest),
@@ -614,7 +650,12 @@ async def capture_frame(
                 await asyncio.to_thread(_extract_frame_at, video_path, tmp_png, t)
             else:
                 await asyncio.to_thread(
-                    _extract_frame_by_index, video_path, tmp_png, body.frame_idx,
+                    _extract_frame_by_index,
+                    video_path,
+                    tmp_png,
+                    body.frame_idx,
+                    fps=source.fps,
+                    t_seconds=t,
                 )
         except Exception as e:
             logger.exception("frame capture failed for %s @ %.3fs", video_path, t)

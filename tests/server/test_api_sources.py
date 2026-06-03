@@ -583,6 +583,54 @@ async def test_capture_frame_uses_frame_idx_when_provided(
     assert center_gray == pytest.approx(100, abs=8)
 
 
+def test_frame_index_seek_plan_uses_short_preroll():
+    from neme_anima.server.api.sources import _frame_index_seek_plan
+
+    seek_seconds, local_frame_idx = _frame_index_seek_plan(
+        68_784, fps=24.0, t_seconds=None,
+    )
+
+    assert seek_seconds == pytest.approx(2865.0)
+    assert local_frame_idx == 24
+
+
+def test_frame_index_seek_plan_estimates_fps_from_playhead_time():
+    from neme_anima.server.api.sources import _frame_index_seek_plan
+
+    seek_seconds, local_frame_idx = _frame_index_seek_plan(
+        2400, fps=None, t_seconds=100.0,
+    )
+
+    assert seek_seconds == pytest.approx(99.0)
+    assert local_frame_idx == 24
+
+
+def test_extract_frame_by_index_uses_input_seek(monkeypatch, tmp_path: Path):
+    import subprocess
+
+    from neme_anima.server.api import sources as sources_api
+
+    captured: dict[str, list[str]] = {}
+    dest = tmp_path / "capture.png"
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        dest.write_bytes(b"png")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    sources_api._extract_frame_by_index(
+        Path("/video.mkv"), dest, 68_784, fps=24.0, t_seconds=None,
+    )
+
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("-ss") + 1] == "2865.000"
+    assert cmd.index("-ss") < cmd.index("-i")
+    assert "select=eq(n\\,24)" in cmd
+
+
 async def test_capture_frame_routes_to_named_character(
     client, app, project: Project, tmp_path: Path,
 ):
