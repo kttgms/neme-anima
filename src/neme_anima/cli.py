@@ -21,6 +21,8 @@ character_app = typer.Typer(
     name="character", help="Per-character operations.",
 )
 app.add_typer(character_app, name="character")
+tags_app = typer.Typer(name="tags", help="Manage the danbooru tag list used for autocomplete.")
+app.add_typer(tags_app, name="tags")
 console = Console()
 
 
@@ -163,6 +165,34 @@ def project_tag_loras(
         "tagged_count": len(tagged),
         "tagged_files": tagged,
     }, indent=2))
+
+
+@tags_app.command("fetch")
+def tags_fetch(
+    force: bool = typer.Option(False, "--force", help="Re-download even if present."),
+    url: str = typer.Option(None, "--url", help="Override the source URL."),
+) -> None:
+    """Download the danbooru tag list (for tag autocomplete) into the state dir."""
+    from neme_anima.tag_vocabulary import (
+        DANBOORU_TAGS_URL,
+        default_tag_vocabulary_path,
+        fetch_tag_vocabulary,
+    )
+
+    dest = default_tag_vocabulary_path()
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        console.print(
+            f"[green]present[/green] {dest} "
+            f"({dest.stat().st_size // 1024} KiB) — use --force to re-download"
+        )
+        return
+    console.print(f"downloading danbooru tag list → {dest} …")
+    try:
+        fetch_tag_vocabulary(dest, url=url or DANBOORU_TAGS_URL, force=force)
+    except Exception as e:  # noqa: BLE001 — surface any network/parse error to the user
+        console.print(f"[red]error:[/red] {e}")
+        raise typer.Exit(code=1) from e
+    console.print(f"[green]done[/green] {dest} ({dest.stat().st_size // 1024} KiB)")
 
 
 @app.command()
