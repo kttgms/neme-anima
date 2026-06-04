@@ -485,7 +485,7 @@
        backdrop's close handler because they target panel children. The panels
        reload themselves when `filename` changes via arrow-key nav. -->
   <aside
-    class="w-80 shrink-0 h-full bg-ink-900 border border-ink-700 rounded-lg flex flex-col gap-4 p-4 overflow-y-auto"
+    class="w-96 shrink-0 h-full bg-ink-900 border border-ink-700 rounded-lg flex flex-col gap-4 p-4 overflow-y-auto"
   >
     <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} onclose={requestClose} />
     <DescriptionEditorPanel {filename} ondirty={(d) => (descDirty = d)} />

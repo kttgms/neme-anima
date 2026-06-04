@@ -98,7 +98,7 @@
   // with proportionally larger padding and a wider edit input.
   let sz = $derived(
     size === "md"
-      ? { text: "text-[12.5px]", btn: "px-2 py-1", input: "px-2.5 py-1 w-32" }
+      ? { text: "text-[11.25px]", btn: "px-2 py-0.5", input: "px-2.5 py-0.5 w-28" }
       : { text: "text-[9.5px]", btn: "px-1.5 py-0.5", input: "px-2 py-0.5 w-24" },
   );
 </script>

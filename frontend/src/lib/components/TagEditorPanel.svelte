@@ -244,7 +244,7 @@
         onclick={() => (addingTag = true)}
         title="Add tag"
         aria-label="Add tag"
-        class="px-2 py-1 text-[12.5px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors self-start"
+        class="px-2 py-0.5 text-[11.25px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors self-start"
       >+</button>
     </div>
   {/if}
