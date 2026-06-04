@@ -109,7 +109,7 @@
       {#if viewStore.tab === "sources"}
         <SourcesTab />
       {:else if viewStore.tab === "frames"}
-        <FramesTab />
+        <FramesTab onconfirmFrameOverwrite={confirmFrameOverwrite} />
       {:else if viewStore.tab === "training"}
         <TrainingTab />
       {:else if viewStore.tab === "settings"}

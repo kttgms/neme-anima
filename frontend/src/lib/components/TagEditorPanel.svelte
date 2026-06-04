@@ -13,8 +13,14 @@
     ondirty?: (dirty: boolean) => void;
     /** Close the whole modal (routed through the modal's discard guard). */
     onclose?: () => void;
+    /** Overwrite confirmation, shared with the bulk image-selection flow. */
+    onconfirmFrameOverwrite?: (
+      action: "retag" | "describe",
+      selectedCount: number,
+      affectedCount: number,
+    ) => Promise<boolean>;
   };
-  const { filename, ondirty, onclose }: Props = $props();
+  const { filename, ondirty, onclose, onconfirmFrameOverwrite }: Props = $props();
 
   // Sentinel that renders as the empty editable "+" placeholder, matching the
   // pattern used in FrameThumb's hover panel.
@@ -29,6 +35,7 @@
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
   let addingTag = $state(false);
+  let tagging = $state(false);
   let search = $state("");
   let dragFrom = $state<number | null>(null);
   // Insertion index (0..tags.length) the drop would land at — drives the "|"
@@ -165,6 +172,36 @@
     }
   }
 
+  // Re-run the WD14 tagger on this one frame. Mirrors the bulk image-selection
+  // flow (api.bulkRetagDanbooru + the shared overwrite popup) but scoped to a
+  // single filename, then reloads the freshly-written tag line into the panel.
+  async function retagNow() {
+    const slug = projectsStore.active?.slug;
+    if (!slug || tagging || saving || loading) return;
+    const affected = savedTags.length > 0 ? 1 : 0;
+    if (
+      affected > 0 &&
+      onconfirmFrameOverwrite &&
+      !(await onconfirmFrameOverwrite("retag", 1, affected))
+    ) {
+      return;
+    }
+    tagging = true;
+    error = null;
+    try {
+      const res = await api.bulkRetagDanbooru(slug, [filename]);
+      if (res.retagged > 0) {
+        await load(filename);
+        framesStore.markRetagged(filename);
+        framesStore.setSidecarFlags(filename, { has_tags: savedTags.length > 0 });
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      tagging = false;
+    }
+  }
+
   onDestroy(() => { if (flashTimer) clearTimeout(flashTimer); });
 </script>
 
@@ -273,7 +310,14 @@
     <p class="text-xs text-red-400 break-all">{error}</p>
   {/if}
 
-  <div class="flex justify-end">
+  <div class="flex justify-end gap-2">
+    <button
+      type="button"
+      onclick={retagNow}
+      disabled={loading || saving || tagging}
+      title="Re-run the WD14 tagger on this frame (preserves the description)"
+      class="px-4 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+    >{tagging ? "Tagging…" : "Tag"}</button>
     <button
       type="button"
       onclick={save}

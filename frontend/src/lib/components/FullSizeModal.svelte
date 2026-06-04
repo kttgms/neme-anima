@@ -16,8 +16,15 @@
     onclose: () => void;
     /** Called after a crop derivative has been saved server-side. */
     oncropped: () => void;
+    /** Reuses the App-level overwrite confirmation for the panels' Tag /
+     *  Describe buttons (same popup as the bulk image-selection flow). */
+    onconfirmFrameOverwrite: (
+      action: "retag" | "describe",
+      selectedCount: number,
+      affectedCount: number,
+    ) => Promise<boolean>;
   };
-  const { filenames, index, onnav, onclose, oncropped }: Props = $props();
+  const { filenames, index, onnav, onclose, oncropped, onconfirmFrameOverwrite }: Props = $props();
 
   // ---- LoRA-friendly crop guardrails (kept in sync with the brief) ----
   // Anima's bucket range is [0.5, 2.0]; the model was largely trained at 512px,
@@ -487,8 +494,8 @@
   <aside
     class="w-96 shrink-0 h-full bg-ink-900 border border-ink-700 rounded-lg flex flex-col gap-4 p-4 overflow-y-auto"
   >
-    <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} onclose={requestClose} />
-    <DescriptionEditorPanel {filename} ondirty={(d) => (descDirty = d)} />
+    <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} onclose={requestClose} {onconfirmFrameOverwrite} />
+    <DescriptionEditorPanel {filename} ondirty={(d) => (descDirty = d)} {onconfirmFrameOverwrite} />
   </aside>
 </div>
 

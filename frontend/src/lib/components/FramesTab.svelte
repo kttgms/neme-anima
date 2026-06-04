@@ -7,6 +7,17 @@
   import FrameThumb from "./FrameThumb.svelte";
   import FullSizeModal from "./FullSizeModal.svelte";
 
+  type Props = {
+    /** Reuses the App-level overwrite confirmation (same popup the bulk
+     *  image-selection Tag/Describe actions use). */
+    onconfirmFrameOverwrite: (
+      action: "retag" | "describe",
+      selectedCount: number,
+      affectedCount: number,
+    ) => Promise<boolean>;
+  };
+  const { onconfirmFrameOverwrite }: Props = $props();
+
   let previewIndex = $state<number | null>(null);
 
   // One id per dropped file; the skeleton tile renders until that file's
@@ -224,5 +235,6 @@
     onnav={navPreview}
     onclose={() => (previewIndex = null)}
     oncropped={() => { void refreshFramesAfterCrop(); }}
+    {onconfirmFrameOverwrite}
   />
 {/if}

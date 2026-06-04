@@ -8,13 +8,24 @@
     filename: string;
     /** Report unsaved-edit state up to the modal's discard guard. */
     ondirty?: (dirty: boolean) => void;
+    /** Overwrite confirmation, shared with the bulk image-selection flow. */
+    onconfirmFrameOverwrite?: (
+      action: "retag" | "describe",
+      selectedCount: number,
+      affectedCount: number,
+    ) => Promise<boolean>;
   };
-  const { filename, ondirty }: Props = $props();
+  const { filename, ondirty, onconfirmFrameOverwrite }: Props = $props();
+
+  // Matches ActionBar: the Describe button only renders when the project has
+  // an LLM model picked, so a user can't fire a doomed call.
+  let llmModelSelected = $derived(!!projectsStore.active?.llm?.model);
 
   let saved = $state("");
   let text = $state("");
   let loading = $state(true);
   let saving = $state(false);
+  let describing = $state(false);
   let error = $state<string | null>(null);
   let savedFlash = $state(false);
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -69,6 +80,41 @@
     }
   }
 
+  // Re-run the LLM describer on this one frame. Mirrors the bulk image-
+  // selection flow (api.bulkRetagLLM + the shared overwrite popup) scoped to a
+  // single filename, then reloads the freshly-written description.
+  async function describeNow() {
+    const slug = projectsStore.active?.slug;
+    if (!slug || describing || saving || loading) return;
+    const affected = saved.trim().length > 0 ? 1 : 0;
+    if (
+      affected > 0 &&
+      onconfirmFrameOverwrite &&
+      !(await onconfirmFrameOverwrite("describe", 1, affected))
+    ) {
+      return;
+    }
+    describing = true;
+    error = null;
+    try {
+      const res = await api.bulkRetagLLM(slug, [filename]);
+      if (res.described > 0) {
+        const eff = res.effective_filenames?.[0] ?? filename;
+        await load(filename);
+        framesStore.markDescribed(eff);
+        framesStore.setSidecarFlags(filename, {
+          has_description: saved.trim().length > 0,
+        });
+      } else if (res.error) {
+        error = res.error;
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      describing = false;
+    }
+  }
+
   onDestroy(() => { if (flashTimer) clearTimeout(flashTimer); });
 </script>
 
@@ -101,7 +147,16 @@
     <p class="text-xs text-red-400 break-all">{error}</p>
   {/if}
 
-  <div class="flex justify-end">
+  <div class="flex justify-end gap-2">
+    {#if llmModelSelected}
+      <button
+        type="button"
+        onclick={describeNow}
+        disabled={loading || saving || describing}
+        title="Run the LLM describer on this frame (preserves the tags)"
+        class="px-4 py-1.5 text-xs rounded bg-teal-600 hover:bg-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      >{describing ? "Describing…" : "Describe"}</button>
+    {/if}
     <button
       type="button"
       onclick={save}
