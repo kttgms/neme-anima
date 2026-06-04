@@ -38,6 +38,7 @@ class PatchProjectBody(BaseModel):
     thresholds_overrides: dict | None = None
     pause_before_tag: bool | None = None
     auto_delete_rejected: bool | None = None
+    tag_autocomplete: bool | None = None
     llm: LLMConfigBody | None = None
 
 
@@ -110,6 +111,7 @@ def _project_view(project: Project) -> dict:
         "source_root": project.source_root,
         "pause_before_tag": project.pause_before_tag,
         "auto_delete_rejected": project.auto_delete_rejected,
+        "tag_autocomplete": project.tag_autocomplete,
         "rejected_count": _count_rejected(project),
         "llm": asdict(project.llm),
     }
@@ -229,6 +231,8 @@ async def patch_project(request: Request, slug: str, body: PatchProjectBody) -> 
         project.pause_before_tag = body.pause_before_tag
     if body.auto_delete_rejected is not None:
         project.auto_delete_rejected = body.auto_delete_rejected
+    if body.tag_autocomplete is not None:
+        project.tag_autocomplete = body.tag_autocomplete
     if body.llm is not None:
         if body.llm.enabled is not None:
             project.llm.enabled = body.llm.enabled

@@ -307,6 +307,9 @@ class Project:
     # finishes. Off by default so users can audit rejections; flip on
     # once you trust the matching thresholds.
     auto_delete_rejected: bool = False
+    # When True (default), the tag editor shows a danbooru autocomplete
+    # dropdown. Purely a UI nicety — has no effect on the pipeline.
+    tag_autocomplete: bool = True
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     # ---------------- factory methods ----------------
@@ -354,6 +357,7 @@ class Project:
             source_root=data.get("source_root"),
             pause_before_tag=bool(data.get("pause_before_tag", True)),
             auto_delete_rejected=bool(data.get("auto_delete_rejected", False)),
+            tag_autocomplete=bool(data.get("tag_autocomplete", True)),
             llm=LLMConfig(
                 enabled=bool(llm_raw.get("enabled", False)),
                 endpoint=str(llm_raw.get("endpoint") or "http://localhost:1234"),
@@ -473,6 +477,7 @@ class Project:
             "source_root": self.source_root,
             "pause_before_tag": self.pause_before_tag,
             "auto_delete_rejected": self.auto_delete_rejected,
+            "tag_autocomplete": self.tag_autocomplete,
             "llm": asdict(self.llm),
         }
         tmp = self.root / "project.json.tmp"

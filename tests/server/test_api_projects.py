@@ -321,3 +321,18 @@ async def test_delete_rejected_idempotent_when_empty(client, tmp_path: Path):
     resp = await client.delete("/api/projects/p/output/rejected")
     assert resp.status_code == 200
     assert resp.json()["deleted"] == 0
+
+
+async def test_tag_autocomplete_defaults_on_and_round_trips(client, tmp_path: Path):
+    Project.create(tmp_path / "tac", name="tac")
+    await client.post("/api/projects/register", json={"folder": str(tmp_path / "tac")})
+
+    # Defaults to True for a freshly created project.
+    resp = await client.get("/api/projects/tac")
+    assert resp.json()["tag_autocomplete"] is True
+
+    # PATCH it off and confirm it sticks across a reload.
+    resp = await client.patch("/api/projects/tac", json={"tag_autocomplete": False})
+    assert resp.status_code == 200
+    assert resp.json()["tag_autocomplete"] is False
+    assert Project.load(tmp_path / "tac").tag_autocomplete is False
