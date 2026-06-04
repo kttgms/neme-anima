@@ -141,6 +141,25 @@
     autoDeleteRejected = projectsStore.active?.auto_delete_rejected ?? false;
   });
 
+  let tagAutocomplete = $state<boolean>(
+    projectsStore.active?.tag_autocomplete ?? true,
+  );
+  $effect(() => {
+    tagAutocomplete = projectsStore.active?.tag_autocomplete ?? true;
+  });
+
+  // Probe whether the tag list has been downloaded so we can nudge the user to
+  // run `neme-anima tags fetch` if it's missing.
+  let tagListPresent = $state<boolean>(true);
+  onMount(async () => {
+    try {
+      const resp = await fetch("/api/tags/vocabulary", { method: "HEAD" });
+      tagListPresent = resp.ok;
+    } catch {
+      tagListPresent = false;
+    }
+  });
+
   let projectName = $state<string>(projectsStore.active?.name ?? "");
   $effect(() => {
     projectName = projectsStore.active?.name ?? "";
@@ -257,6 +276,7 @@
         thresholds_overrides: overrides,
         pause_before_tag: pauseBeforeTag,
         auto_delete_rejected: autoDeleteRejected,
+        tag_autocomplete: tagAutocomplete,
         llm: {
           // Force disabled if no model selected — server-side has the same
           // guard but enforcing it here keeps the saved state self-consistent.
@@ -364,6 +384,26 @@
           Frames that didn't match any character are deleted instead of saved
           to <code>output/rejected/</code>. Useful once you trust the matching
           thresholds; off by default so you can audit rejections.
+        </span>
+      </span>
+    </label>
+    <label class="flex items-start gap-3 cursor-pointer mt-3">
+      <input
+        type="checkbox"
+        bind:checked={tagAutocomplete}
+        class="mt-0.5 w-4 h-4 rounded bg-ink-950 border-ink-700 accent-accent-500"
+      />
+      <span class="flex-1">
+        <span class="block text-sm text-slate-200">Tag autocomplete</span>
+        <span class="block text-xs text-slate-500 mt-0.5">
+          Show a danbooru tag suggestion dropdown while editing tags. Use
+          <kbd>↑</kbd>/<kbd>↓</kbd> to navigate and <kbd>Tab</kbd> or
+          <kbd>Enter</kbd> to accept.
+          {#if !tagListPresent}
+            <span class="block text-amber-400/90 mt-1">
+              Tag list not downloaded — run <code>neme-anima tags fetch</code>.
+            </span>
+          {/if}
         </span>
       </span>
     </label>
