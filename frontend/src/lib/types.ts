@@ -115,6 +115,9 @@ export interface FrameRecord {
   /** True when the .txt sidecar has a non-empty second line (an LLM
    *  description). Drives the at-a-glance "described" badge in the grid. */
   has_description: boolean;
+  /** True when the .txt sidecar has a non-empty first line of danbooru tags.
+   *  Used to warn before bulk re-tagging overwrites curated tag lines. */
+  has_tags: boolean;
 }
 
 export interface FramesPage {

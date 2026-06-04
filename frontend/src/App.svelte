@@ -12,6 +12,7 @@
   import RegexModal from "$lib/components/RegexModal.svelte";
   import CreateProjectModal from "$lib/components/CreateProjectModal.svelte";
   import DeleteProjectModal from "$lib/components/DeleteProjectModal.svelte";
+  import ConfirmFrameOverwriteModal from "$lib/components/ConfirmFrameOverwriteModal.svelte";
   import SourcesTab from "$lib/components/SourcesTab.svelte";
   import SettingsTab from "$lib/components/SettingsTab.svelte";
   import TrainingTab from "$lib/components/TrainingTab.svelte";
@@ -23,12 +24,37 @@
   // uses backdrop-blur which creates a CSS containing block for
   // position:fixed descendants, clipping any modal mounted under it.
   let deleteProjectOpen = $state(false);
+  type FrameOverwriteRequest = {
+    action: "retag" | "describe";
+    selectedCount: number;
+    affectedCount: number;
+    resolve: (confirmed: boolean) => void;
+  };
+  let frameOverwriteRequest = $state<FrameOverwriteRequest | null>(null);
 
   async function confirmDeleteActiveProject() {
     const slug = projectsStore.active?.slug;
     if (!slug) return;
     await projectsStore.delete(slug);
     deleteProjectOpen = false;
+  }
+
+  function confirmFrameOverwrite(
+    action: "retag" | "describe",
+    selectedCount: number,
+    affectedCount: number,
+  ): Promise<boolean> {
+    frameOverwriteRequest?.resolve(false);
+    return new Promise((resolve) => {
+      frameOverwriteRequest = { action, selectedCount, affectedCount, resolve };
+    });
+  }
+
+  function resolveFrameOverwrite(confirmed: boolean) {
+    const req = frameOverwriteRequest;
+    if (!req) return;
+    frameOverwriteRequest = null;
+    req.resolve(confirmed);
   }
 
   onMount(async () => {
@@ -76,6 +102,7 @@
     onopenRegex={() => (regexOpen = true)}
     onopenCreate={() => (createOpen = true)}
     onopenDelete={() => (deleteProjectOpen = true)}
+    onconfirmFrameOverwrite={confirmFrameOverwrite}
   />
   <main class="px-4 pb-12">
     {#if projectsStore.active}
@@ -107,6 +134,15 @@
       project={projectsStore.active}
       onconfirm={confirmDeleteActiveProject}
       oncancel={() => (deleteProjectOpen = false)}
+    />
+  {/if}
+  {#if frameOverwriteRequest}
+    <ConfirmFrameOverwriteModal
+      action={frameOverwriteRequest.action}
+      selectedCount={frameOverwriteRequest.selectedCount}
+      affectedCount={frameOverwriteRequest.affectedCount}
+      onconfirm={() => resolveFrameOverwrite(true)}
+      oncancel={() => resolveFrameOverwrite(false)}
     />
   {/if}
 </div>

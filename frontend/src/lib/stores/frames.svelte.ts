@@ -75,10 +75,30 @@ class FramesStore {
   /** Bump a frame's retag counter so FrameThumb invalidates its tag cache.
    *  Mutates in place — see the note on markDescribed above. */
   markRetagged(filename: string) {
+    const idx = this.items.findIndex((i) => i.filename === filename);
+    if (idx >= 0 && !this.items[idx].has_tags) {
+      this.items[idx] = { ...this.items[idx], has_tags: true };
+    }
     this.retaggedVersion.set(
       filename,
       (this.retaggedVersion.get(filename) ?? 0) + 1,
     );
+  }
+
+  setSidecarFlags(
+    filename: string,
+    flags: Partial<Pick<FrameRecord, "has_tags" | "has_description">>,
+  ) {
+    const idx = this.items.findIndex((i) => i.filename === filename);
+    if (idx < 0) return;
+    const current = this.items[idx];
+    const next = { ...current, ...flags };
+    if (
+      next.has_tags !== current.has_tags ||
+      next.has_description !== current.has_description
+    ) {
+      this.items[idx] = next;
+    }
   }
 
   /** Add filenames to the in-flight set so their tiles show a spinner. */

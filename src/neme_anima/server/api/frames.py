@@ -171,6 +171,7 @@ async def list_frames(
             kept_dir / f"{rec.filename}.txt", tokens,
         ):
             continue
+        sidecar_flags = _sidecar_flags(kept_dir / f"{rec.filename}.txt")
         items.append({
             "filename": rec.filename,
             "kept": rec.kept,
@@ -182,7 +183,7 @@ async def list_frames(
             "ccip_distance": rec.ccip_distance,
             "score": rec.score,
             "character_slug": rec.character_slug,
-            "has_description": _has_description(kept_dir / f"{rec.filename}.txt"),
+            **sidecar_flags,
         })
     return {
         "count": len(items),
@@ -234,20 +235,22 @@ def _frame_matches_tag_query(
     return True
 
 
-def _has_description(txt_path: Path) -> bool:
-    """True if the sidecar has a non-empty second row.
+def _sidecar_flags(txt_path: Path) -> dict[str, bool]:
+    """Return booleans for populated sidecar sections.
 
     Reads the file rather than just stat'ing — a stale .txt with whitespace
-    on row 2 should still count as "no description" so the grid badge stays
-    honest. The files are tiny (a few hundred bytes) so this is cheap.
+    in either section should still count as empty so overwrite warnings and
+    grid badges stay honest. The files are tiny (a few hundred bytes) so this
+    is cheap.
     """
+    empty = {"has_tags": False, "has_description": False}
     if not txt_path.is_file():
-        return False
+        return empty
     try:
-        _, description = split_sidecar(txt_path.read_text(encoding="utf-8"))
+        danbooru, description = split_sidecar(txt_path.read_text(encoding="utf-8"))
     except OSError:
-        return False
-    return bool(description)
+        return empty
+    return {"has_tags": bool(danbooru), "has_description": bool(description)}
 
 
 @router.get("/{slug}/frames/{filename}/image")
@@ -525,7 +528,12 @@ async def bulk_retag_llm(
     }
 
 
-def _record_to_dict(rec: FrameRecord) -> dict:
+def _record_to_dict(rec: FrameRecord, project: Project | None = None) -> dict:
+    flags = (
+        _sidecar_flags(project.kept_dir / f"{rec.filename}.txt")
+        if project is not None
+        else {"has_tags": False, "has_description": False}
+    )
     return {
         "filename": rec.filename,
         "kept": rec.kept,
@@ -537,6 +545,7 @@ def _record_to_dict(rec: FrameRecord) -> dict:
         "ccip_distance": rec.ccip_distance,
         "score": rec.score,
         "character_slug": rec.character_slug,
+        **flags,
     }
 
 
@@ -662,7 +671,7 @@ async def crop_frame_endpoint(
     # keeps the latest record, so a re-crop "replaces" the visible bbox
     # without us having to rewrite the log.
     MetadataLog(project.metadata_path).append(new_rec)
-    return _record_to_dict(new_rec)
+    return _record_to_dict(new_rec, project)
 
 
 def _get_or_make_tagger(request: Request):
@@ -801,7 +810,7 @@ async def ingest_kept_image(
         character_slug=target_slug,
     )
     MetadataLog(project.metadata_path).append(rec)
-    return _record_to_dict(rec), llm_error
+    return _record_to_dict(rec, project), llm_error
 
 
 @router.post("/{slug}/frames/upload")
@@ -929,7 +938,7 @@ async def move_frame_to_character(
     if rec is None:
         raise HTTPException(status_code=404, detail="frame metadata not found")
     moved = _append_moved_record(project, rec, body.character_slug)
-    return _record_to_dict(moved)
+    return _record_to_dict(moved, project)
 
 
 @router.post("/{slug}/frames/bulk-move")
@@ -1011,7 +1020,7 @@ async def duplicate_frame_for_character(
     if rec is None:
         raise HTTPException(status_code=404, detail="frame metadata not found")
     new_rec = _duplicate_for_character(project, rec, body.character_slug)
-    return _record_to_dict(new_rec)
+    return _record_to_dict(new_rec, project)
 
 
 @router.post("/{slug}/frames/bulk-duplicate")

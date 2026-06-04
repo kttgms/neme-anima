@@ -4,9 +4,18 @@
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
+  import type { FrameRecord } from "$lib/types";
 
-  type Props = { onopenRegex: () => void };
-  const { onopenRegex }: Props = $props();
+  type OverwriteAction = "retag" | "describe";
+  type Props = {
+    onopenRegex: () => void;
+    onconfirmFrameOverwrite: (
+      action: OverwriteAction,
+      selectedCount: number,
+      affectedCount: number,
+    ) => Promise<boolean>;
+  };
+  const { onopenRegex, onconfirmFrameOverwrite }: Props = $props();
 
   // Multi-character UI is only relevant when the project actually has more
   // than one character — single-character projects keep the pre-multi-
@@ -121,12 +130,25 @@
   let queryActive = $derived(viewStore.tagQuery.trim().length > 0);
   let allSelected = $derived(count > 0 && count === total);
 
-  // The LLM-retag button only renders when the project has a model picked —
-  // matches Settings logic so a user can't fire a doomed retag against an
+  // The LLM describe button only renders when the project has a model picked —
+  // matches Settings logic so a user can't fire a doomed describe against an
   // unconfigured endpoint.
   let llmModelSelected = $derived(!!projectsStore.active?.llm?.model);
 
   let retagBusy = $state(false);
+
+  function selectedItems(filenames: string[]): FrameRecord[] {
+    const selected = new Set(filenames);
+    return framesStore.items.filter((it) => selected.has(it.filename));
+  }
+
+  function countExistingTags(filenames: string[]): number {
+    return selectedItems(filenames).filter((it) => it.has_tags).length;
+  }
+
+  function countExistingDescriptions(filenames: string[]): number {
+    return selectedItems(filenames).filter((it) => it.has_description).length;
+  }
 
   async function deleteSelected() {
     const slug = projectsStore.active?.slug;
@@ -143,6 +165,17 @@
     if (!slug || retagBusy) return;
     const filenames = framesStore.selectedFilenames();
     if (filenames.length === 0) return;
+    const affectedCount = countExistingTags(filenames);
+    if (
+      affectedCount > 0 &&
+      !(await onconfirmFrameOverwrite("retag", filenames.length, affectedCount))
+    ) {
+      return;
+    }
+    await runRetagDanbooru(slug, filenames);
+  }
+
+  async function runRetagDanbooru(slug: string, filenames: string[]) {
     retagBusy = true;
     // Mark every selected frame as in-flight up-front so tiles that haven't
     // been reached yet still show a spinner (queued state). Each per-frame
@@ -180,6 +213,17 @@
     if (!slug || retagBusy) return;
     const filenames = framesStore.selectedFilenames();
     if (filenames.length === 0) return;
+    const affectedCount = countExistingDescriptions(filenames);
+    if (
+      affectedCount > 0 &&
+      !(await onconfirmFrameOverwrite("describe", filenames.length, affectedCount))
+    ) {
+      return;
+    }
+    await runRetagLLM(slug, filenames);
+  }
+
+  async function runRetagLLM(slug: string, filenames: string[]) {
     retagBusy = true;
     // Same up-front spinner-marking pattern as retagDanbooru: every selected
     // frame is "queued" from the user's perspective the moment they click
@@ -263,7 +307,7 @@
            while still reading as part of the cluster:
              Delete  → red (destructive, conventional warning hue)
              Regex…  → amber (text-edit / "transform the tag line")
-             Re-tag  → emerald (rewrite from a model)
+             Tag     → emerald (write/rewrite from a model)
              Describe → teal (also model-driven, sibling colour to emerald)
            All sit on the purple gradient via /30 alpha so the parent pill
            still reads as a single unit. -->
@@ -283,15 +327,15 @@
           type="button"
           onclick={retagDanbooru}
           disabled={retagBusy}
-          title="Re-run WD14 tagger on selected frames (preserves the LLM description line)"
+          title="Run WD14 tagger on selected frames (preserves the LLM description line)"
           class="bg-emerald-500/30 hover:bg-emerald-500/55 rounded-full px-2.5 h-5 transition-colors inline-flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
-        >Re-tag</button>
+        >Tag</button>
         {#if llmModelSelected}
           <button
             type="button"
             onclick={retagLLM}
             disabled={retagBusy}
-            title="Re-run LLM description on selected frames (preserves WD14 tags)"
+            title="Run LLM description on selected frames (preserves WD14 tags)"
             class="bg-teal-500/30 hover:bg-teal-500/55 rounded-full px-2.5 h-5 transition-colors inline-flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
           >Describe</button>
         {/if}
@@ -364,6 +408,7 @@
                 {/each}
               </div>
             {/if}
+
           </div>
         {/if}
         <button

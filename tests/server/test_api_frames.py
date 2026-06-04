@@ -581,11 +581,13 @@ async def test_bulk_retag_llm_resolves_crop_filename_to_original(
     assert not (project_with_frames.kept_dir / f"{crop_name}.txt").exists()
 
 
-async def test_list_frames_has_description_flag(
+async def test_list_frames_has_sidecar_flags(
     client, project_with_frames: Project,
 ):
-    """The grid uses this flag to render an at-a-glance "described" badge —
-    must reflect line 2 presence, not just file existence."""
+    """The grid uses these flags for badges and overwrite warnings.
+
+    They must reflect populated sidecar sections, not just file existence.
+    """
     described = "ep01__s000_t001_f000010"
     plain = "ep02__s000_t001_f000020"
     (project_with_frames.kept_dir / f"{described}.txt").write_text(
@@ -599,7 +601,16 @@ async def test_list_frames_has_description_flag(
     assert resp.status_code == 200
     by_name = {f["filename"]: f for f in resp.json()["items"]}
     assert by_name[described]["has_description"] is True
+    assert by_name[described]["has_tags"] is True
     assert by_name[plain]["has_description"] is False
+    assert by_name[plain]["has_tags"] is True
+
+    (project_with_frames.kept_dir / f"{plain}.txt").write_text(
+        "\n", encoding="utf-8",
+    )
+    resp = await client.get(f"/api/projects/{project_with_frames.slug}/frames")
+    by_name = {f["filename"]: f for f in resp.json()["items"]}
+    assert by_name[plain]["has_tags"] is False
 
 
 async def test_get_description_returns_only_second_line(

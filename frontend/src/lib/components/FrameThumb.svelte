@@ -146,6 +146,9 @@
     // otherwise the next render would still show the raw text we sent.
     const r = await api.putTags(slug, frame.filename, next);
     tagText = r.text;
+    framesStore.setSidecarFlags(frame.filename, {
+      has_tags: Boolean(splitSidecar(r.text).danbooru),
+    });
   }
 
   let imageUrl = $derived(
@@ -435,6 +438,9 @@
     onclose={() => (descriptionModalOpen = false)}
     onsaved={async (text) => {
       hasDescriptionLocal = text.trim().length > 0;
+      framesStore.setSidecarFlags(frame.filename, {
+        has_description: hasDescriptionLocal,
+      });
       // Refetch the full sidecar from the server so the badge tooltip is
       // server-truth, regardless of whether the cache had been populated
       // before the save. Falls back to a local patch if the fetch fails so
