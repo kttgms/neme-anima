@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 
 from neme_anima.server.app import create_app
 from neme_anima.storage.metadata import FrameRecord, MetadataLog
@@ -579,6 +579,141 @@ async def test_bulk_retag_llm_resolves_crop_filename_to_original(
     )
     assert "ok" in orig_txt
     assert not (project_with_frames.kept_dir / f"{crop_name}.txt").exists()
+
+
+# --- LLM tag review --------------------------------------------------------- #
+
+_REVIEW_CSV = (
+    'blonde_hair,0,1981860,"yellow_hair"\n'
+    "smile,0,1000000,\n"
+    "halo,0,414828,\n"
+)
+
+
+def _write_review_vocab(app) -> None:
+    """Drop a tiny danbooru CSV into the app's state dir so review can run."""
+    (app.state.state_dir / "danbooru-tags.csv").write_text(_REVIEW_CSV, encoding="utf-8")
+
+
+async def test_review_tags_422_when_no_model(client, project_with_frames: Project):
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/"
+        "ep01__s000_t001_f000010/review-tags",
+    )
+    assert resp.status_code == 422
+    assert "model" in resp.json()["detail"].lower()
+
+
+async def test_review_tags_422_when_vocab_missing(
+    client, project_with_frames: Project,
+):
+    project_with_frames.llm.model = "fake-model"
+    project_with_frames.save()
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/"
+        "ep01__s000_t001_f000010/review-tags",
+    )
+    assert resp.status_code == 422
+    assert "vocabulary" in resp.json()["detail"].lower()
+
+
+async def test_review_tags_reconciles_model_output(
+    client, app, project_with_frames: Project, monkeypatch,
+):
+    name = "ep01__s000_t001_f000010"
+    project_with_frames.llm.model = "fake-model"
+    project_with_frames.save()
+    _write_review_vocab(app)
+    (project_with_frames.kept_dir / f"{name}.txt").write_text(
+        "1girl, smile, blonde hair\nA caption to preserve.\n", encoding="utf-8",
+    )
+
+    seen_image: list[Path] = []
+    seen_existing: list[list[str]] = []
+
+    def fake_review_tags(*, endpoint, model, image_path, existing_tags, search_fn, **kw):
+        seen_image.append(image_path)
+        seen_existing.append(existing_tags)
+        return {
+            "keep": ["1girl"],  # ignored — keep is derived
+            "remove": [{"tag": "smile", "reason": "not smiling"}],
+            "add": [
+                {"tag": "halo", "reason": "ring above head"},
+                {"tag": "yellow_hair", "reason": "hair"},  # alias of existing -> dropped
+                {"tag": "not_a_real_tag", "reason": "bogus"},  # dropped
+            ],
+        }
+
+    monkeypatch.setattr("neme_anima.llm.review_tags", fake_review_tags)
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/{name}/review-tags",
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # The model saw the original tags (the only sidecar) and the original image.
+    assert seen_existing == [["1girl", "smile", "blonde hair"]]
+    assert seen_image == [project_with_frames.kept_dir / f"{name}.png"]
+
+    assert body["keep"] == ["1girl", "blonde hair"]  # existing minus removed
+    assert [r["tag"] for r in body["remove"]] == ["smile"]
+    assert [a["tag"] for a in body["add"]] == ["halo"]
+    assert body["proposed_final"] == ["1girl", "blonde hair", "halo"]
+    assert body["effective_filename"] == name
+    # Read-only: the sidecar must be untouched, caption preserved.
+    on_disk = (project_with_frames.kept_dir / f"{name}.txt").read_text(encoding="utf-8")
+    assert on_disk == "1girl, smile, blonde hair\nA caption to preserve.\n"
+
+
+async def test_review_tags_prefers_crop_image(
+    client, app, project_with_frames: Project, monkeypatch,
+):
+    """Like the retag paths: review the crop pixels, tags from the original."""
+    name = "ep01__s000_t001_f000010"
+    project_with_frames.llm.model = "fake-model"
+    project_with_frames.save()
+    _write_review_vocab(app)
+    original = np.full((64, 64, 3), 200, dtype=np.uint8)
+    crop = np.full((32, 32, 3), 40, dtype=np.uint8)
+    Image.fromarray(original).save(project_with_frames.kept_dir / f"{name}.png")
+    Image.fromarray(crop).save(project_with_frames.kept_dir / f"{name}_crop.png")
+
+    seen_image: list[Path] = []
+
+    def fake_review_tags(*, image_path, **kw):
+        seen_image.append(image_path)
+        return {"keep": [], "remove": [], "add": []}
+
+    monkeypatch.setattr("neme_anima.llm.review_tags", fake_review_tags)
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/{name}/review-tags",
+    )
+    assert resp.status_code == 200
+    assert seen_image == [project_with_frames.kept_dir / f"{name}_crop.png"]
+    assert resp.json()["effective_filename"] == name
+
+
+async def test_review_tags_surfaces_llm_error(
+    client, app, project_with_frames: Project, monkeypatch,
+):
+    name = "ep01__s000_t001_f000010"
+    project_with_frames.llm.model = "fake-model"
+    project_with_frames.save()
+    _write_review_vocab(app)
+
+    def fake_review_tags(**kw):
+        from neme_anima.llm import LLMUnavailable
+        raise LLMUnavailable("context window too small")
+
+    monkeypatch.setattr("neme_anima.llm.review_tags", fake_review_tags)
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/{name}/review-tags",
+    )
+    assert resp.status_code == 422
+    assert "context" in resp.json()["detail"].lower()
 
 
 async def test_list_frames_has_sidecar_flags(

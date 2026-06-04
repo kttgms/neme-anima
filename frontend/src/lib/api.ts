@@ -472,6 +472,35 @@ export const bulkRetagLLM = (slug: string, filenames: string[]) =>
     { method: "POST", body: JSON.stringify({ filenames }) },
   );
 
+/** A {tag, reason} suggestion from the LLM tag-review pass. */
+export interface TagReviewItem {
+  tag: string;
+  reason: string;
+}
+
+/** The reconciled, applyable diff the review endpoint returns. */
+export interface TagReview {
+  /** Existing tags retained (existing minus accepted removals). */
+  keep: string[];
+  /** Existing tags the model flagged for removal, with reasons. */
+  remove: TagReviewItem[];
+  /** New, canonicalized danbooru tags to add, with reasons. */
+  add: TagReviewItem[];
+  /** keep + add — the list if every suggestion is accepted. */
+  proposed_final: string[];
+  /** Human-readable notes on what reconciliation dropped/normalized. */
+  notes: string[];
+  /** The filename the review actually targeted (the crop, when one exists). */
+  effective_filename: string;
+}
+
+/** Ask the LLM to review one frame's tags against its (cropped) image. */
+export const reviewTags = (slug: string, filename: string) =>
+  request<TagReview>(
+    `/api/projects/${encodeURIComponent(slug)}/frames/${encodeURIComponent(filename)}/review-tags`,
+    { method: "POST" },
+  );
+
 // ---- llm ----
 
 export const discoverLLMModels = (endpoint: string, apiKey: string = "") =>

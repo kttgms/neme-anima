@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from neme_anima.storage.metadata import FrameRecord, MetadataLog
 from neme_anima.storage.project import CROP_SUFFIX, Project
 from neme_anima.tag import join_sidecar, split_sidecar
+from neme_anima.tag_vocabulary import tag_vocabulary_path
 
 router = APIRouter(prefix="/api/projects", tags=["frames"])
 
@@ -526,6 +527,136 @@ async def bulk_retag_llm(
         # is the crop's filename so the frontend pops the right row.
         "effective_filenames": effective_filenames,
     }
+
+
+def _parse_tag_line(line: str) -> list[str]:
+    """Split a danbooru tag line into a deduped, order-preserving list."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in line.split(","):
+        t = raw.strip()
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
+
+
+def _reconcile_review(raw: dict, existing: list[str], index) -> dict:
+    """Turn the model's raw verdict into a trustworthy, applyable diff.
+
+    The model is helpful but imperfect — it occasionally proposes tags that
+    aren't real danbooru tags, proposes a non-canonical alias of a tag that's
+    already present, or loses track of which tags existed. So we don't trust its
+    bookkeeping: an existing tag is KEPT unless it's explicitly removed, every
+    proposed addition is canonicalized + validated against the vocabulary, and
+    anything that collapses onto an existing/removed tag is dropped (with a note
+    explaining why). The result is deterministic regardless of model sloppiness.
+    """
+    def norm(s: str) -> str:
+        return s.replace("_", " ").strip().lower()
+
+    existing_norm = {norm(t) for t in existing}
+    notes: list[str] = []
+
+    removed_norm: set[str] = set()
+    remove: list[dict] = []
+    for r in raw.get("remove", []):
+        if not isinstance(r, dict):
+            continue
+        tag = str(r.get("tag", "")).strip()
+        if not tag:
+            continue
+        n = norm(tag)
+        if n not in existing_norm:
+            notes.append(f"ignored removal of '{tag}' (not a current tag)")
+            continue
+        if n in removed_norm:
+            continue
+        removed_norm.add(n)
+        # Report the tag exactly as it appears on disk.
+        on_disk = next((t for t in existing if norm(t) == n), tag)
+        remove.append({"tag": on_disk, "reason": str(r.get("reason", "")).strip()})
+
+    add: list[dict] = []
+    added_norm: set[str] = set()
+    for a in raw.get("add", []):
+        if not isinstance(a, dict):
+            continue
+        tag = str(a.get("tag", "")).strip()
+        if not tag:
+            continue
+        canon, real = index.canonicalize(tag)
+        cn = norm(canon)
+        if not real:
+            notes.append(f"dropped proposed '{tag}' (not a danbooru tag)")
+            continue
+        if cn in existing_norm and cn not in removed_norm:
+            notes.append(f"dropped proposed '{tag}' ('{canon}' is already present)")
+            continue
+        if cn in added_norm:
+            continue
+        added_norm.add(cn)
+        if norm(tag) != cn:
+            notes.append(f"'{tag}' normalized to '{canon}'")
+        add.append({"tag": canon, "reason": str(a.get("reason", "")).strip()})
+
+    keep = [t for t in existing if norm(t) not in removed_norm]
+    proposed_final = keep + [a["tag"] for a in add]
+    return {"keep": keep, "remove": remove, "add": add,
+            "proposed_final": proposed_final, "notes": notes}
+
+
+@router.post("/{slug}/frames/{filename}/review-tags")
+async def review_frame_tags(request: Request, slug: str, filename: str) -> dict:
+    """LLM-assisted tag review for one frame (vision + danbooru tool calling).
+
+    Read-only: returns a proposed diff (keep / remove-with-reason /
+    add-with-reason) for the user to accept or reject in the editor — it does
+    NOT touch the sidecar. Like the WD14/LLM retag paths, the *image* reviewed
+    is the crop derivative when one exists, while tags come from the original's
+    sidecar. Returns 422 when no LLM model is configured or the danbooru
+    vocabulary hasn't been downloaded.
+    """
+    from neme_anima.llm import LLMUnavailable, review_tags
+    from neme_anima.tag_vocabulary import load_index
+
+    project = _load(request, slug)
+    if not project.llm.model:
+        raise HTTPException(
+            status_code=422,
+            detail="LLM tagging not configured: pick a model in Settings first",
+        )
+    csv_path = tag_vocabulary_path(request.app.state.state_dir)
+    if not csv_path.exists():
+        raise HTTPException(
+            status_code=422,
+            detail="tag vocabulary not downloaded; run `neme-anima tags fetch` first",
+        )
+    png, txt, eff = _resolve_tag_target(project, filename)
+    if not png.is_file():
+        raise HTTPException(status_code=404, detail="frame not found")
+    danbooru, _ = split_sidecar(txt.read_text(encoding="utf-8") if txt.exists() else "")
+    existing = _parse_tag_line(danbooru)
+
+    endpoint = project.llm.endpoint
+    model = project.llm.model
+    api_key = project.llm.api_key or None
+
+    def _run() -> dict:
+        index = load_index(csv_path)
+        raw = review_tags(
+            endpoint=endpoint, model=model, image_path=png,
+            existing_tags=existing, search_fn=index.search, api_key=api_key,
+        )
+        return _reconcile_review(raw, existing, index)
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except LLMUnavailable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["effective_filename"] = eff
+    return result
 
 
 def _record_to_dict(rec: FrameRecord, project: Project | None = None) -> dict:

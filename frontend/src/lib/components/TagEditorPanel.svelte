@@ -23,6 +23,9 @@
   const { filename, ondirty, onclose, onconfirmFrameOverwrite }: Props = $props();
 
   let autocompleteOn = $derived(projectsStore.active?.tag_autocomplete ?? true);
+  // Same gate the Describe button uses: the Review button only appears once a
+  // model has been picked in Settings.
+  let llmModelSelected = $derived(!!projectsStore.active?.llm?.model);
 
   // Sentinel that renders as the empty editable "+" placeholder, matching the
   // pattern used in FrameThumb's hover panel.
@@ -39,6 +42,14 @@
   let addingTag = $state(false);
   let tagging = $state(false);
   let search = $state("");
+
+  // ---- LLM tag review (staged: applies into `tags`, not the server) ----
+  let reviewing = $state(false);
+  let reviewResult = $state<api.TagReview | null>(null);
+  // Which suggested removals/additions are currently checked. Keyed by tag
+  // text; default all-checked when a review arrives.
+  let acceptRemove = $state<Set<string>>(new Set());
+  let acceptAdd = $state<Set<string>>(new Set());
   let dragFrom = $state<number | null>(null);
   // Insertion index (0..tags.length) the drop would land at — drives the "|"
   // marker. Computed from which side of the hovered pill's midpoint the
@@ -57,6 +68,7 @@
     search = "";
     dragFrom = null;
     dropIndex = null;
+    reviewResult = null; // discard stale suggestions for the previous frame
     void load(fn);
   });
 
@@ -204,6 +216,49 @@
     }
   }
 
+  // Ask the LLM to review the current tags against the (cropped) image. The
+  // result is a proposed diff the user accepts/rejects; applying it only stages
+  // into `tags` — nothing is written until the user hits "Save tags".
+  async function reviewNow() {
+    const slug = projectsStore.active?.slug;
+    if (!slug || reviewing || saving || loading || tagging) return;
+    const fn = filename; // review is slow; guard against arrow-key nav meanwhile
+    reviewing = true;
+    error = null;
+    reviewResult = null;
+    try {
+      const r = await api.reviewTags(slug, fn);
+      if (fn !== filename) return; // user navigated away — drop stale result
+      reviewResult = r;
+      acceptRemove = new Set(r.remove.map((x) => x.tag));
+      acceptAdd = new Set(r.add.map((x) => x.tag));
+    } catch (e) {
+      if (fn !== filename) return;
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (fn === filename) reviewing = false;
+    }
+  }
+
+  function toggleAccept(set: Set<string>, tag: string): Set<string> {
+    const next = new Set(set);
+    if (next.has(tag)) next.delete(tag);
+    else next.add(tag);
+    return next;
+  }
+
+  let acceptedCount = $derived(acceptRemove.size + acceptAdd.size);
+
+  function applyReview() {
+    if (!reviewResult) return;
+    let next = tags.filter((t) => !acceptRemove.has(t));
+    for (const a of reviewResult.add) {
+      if (acceptAdd.has(a.tag)) next.push(a.tag);
+    }
+    tags = dedupe(next);
+    reviewResult = null;
+  }
+
   onDestroy(() => { if (flashTimer) clearTimeout(flashTimer); });
 </script>
 
@@ -312,11 +367,105 @@
     </div>
   {/if}
 
+  {#if reviewResult}
+    <!-- LLM review diff: accept/reject removals + additions, then "Apply" to
+         stage them into the tag list (still requires Save tags to persist). -->
+    <div class="border border-violet-700/50 rounded bg-violet-950/20 p-2 flex flex-col gap-2 text-xs max-h-[45%] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] font-semibold uppercase tracking-wide text-violet-300">LLM review</span>
+        <button
+          type="button"
+          onclick={() => (reviewResult = null)}
+          aria-label="Dismiss review"
+          class="w-5 h-5 rounded text-slate-400 hover:text-slate-100 flex items-center justify-center leading-none"
+        >×</button>
+      </div>
+
+      {#if reviewResult.remove.length === 0 && reviewResult.add.length === 0}
+        <p class="text-slate-500">No changes suggested — the tags look accurate.</p>
+      {/if}
+
+      {#if reviewResult.remove.length}
+        <div class="flex flex-col gap-0.5">
+          <p class="text-[10px] uppercase tracking-wide text-rose-400/80">Remove</p>
+          {#each reviewResult.remove as r (r.tag)}
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acceptRemove.has(r.tag)}
+                onchange={() => (acceptRemove = toggleAccept(acceptRemove, r.tag))}
+                class="mt-0.5 accent-rose-500"
+              />
+              <span>
+                <span class="line-through text-rose-300">{r.tag}</span>
+                <span class="text-slate-500"> — {r.reason}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+      {/if}
+
+      {#if reviewResult.add.length}
+        <div class="flex flex-col gap-0.5">
+          <p class="text-[10px] uppercase tracking-wide text-emerald-400/80">Add</p>
+          {#each reviewResult.add as a (a.tag)}
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acceptAdd.has(a.tag)}
+                onchange={() => (acceptAdd = toggleAccept(acceptAdd, a.tag))}
+                class="mt-0.5 accent-emerald-500"
+              />
+              <span>
+                <span class="text-emerald-300">{a.tag}</span>
+                <span class="text-slate-500"> — {a.reason}</span>
+              </span>
+            </label>
+          {/each}
+        </div>
+      {/if}
+
+      {#if reviewResult.notes.length}
+        <details class="text-slate-500">
+          <summary class="cursor-pointer text-[10px]">{reviewResult.notes.length} note{reviewResult.notes.length === 1 ? "" : "s"}</summary>
+          <ul class="list-disc pl-4 mt-1 space-y-0.5">
+            {#each reviewResult.notes as n}<li>{n}</li>{/each}
+          </ul>
+        </details>
+      {/if}
+
+      {#if reviewResult.remove.length || reviewResult.add.length}
+        <div class="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onclick={() => (reviewResult = null)}
+            class="px-3 py-1 rounded bg-ink-800 hover:bg-ink-700 text-slate-300"
+          >Dismiss</button>
+          <button
+            type="button"
+            onclick={applyReview}
+            disabled={acceptedCount === 0}
+            class="px-3 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          >Apply {acceptedCount} change{acceptedCount === 1 ? "" : "s"}</button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   {#if error}
     <p class="text-xs text-red-400 break-all">{error}</p>
   {/if}
 
   <div class="flex justify-end gap-2">
+    {#if llmModelSelected}
+      <button
+        type="button"
+        onclick={reviewNow}
+        disabled={loading || saving || tagging || reviewing}
+        title="Ask the LLM to review these tags against the image (proposes removals and additions)"
+        class="px-4 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      >{reviewing ? "Reviewing…" : "Review"}</button>
+    {/if}
     <button
       type="button"
       onclick={retagNow}
