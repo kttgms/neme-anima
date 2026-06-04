@@ -146,6 +146,8 @@
   // keys. `parseTags` handles split + trim + dedupe.
   let realPills = $derived(parseTags(splitSidecar(tagText ?? "").danbooru));
 
+  let autocompleteOn = $derived(projectsStore.active?.tag_autocomplete ?? true);
+
   // Tooltip text for the top-left "described" badge. Tags get loaded the
   // first time the thumb is hovered (which always happens before/while the
   // user reaches the small badge), so by the time the native tooltip kicks
@@ -353,12 +355,16 @@
             <TagPill
               text=""
               startEditing
+              autocomplete={autocompleteOn}
+              existingTags={realPills}
               onreplace={(next) => addTag(next)}
               oncancel={() => { addingTag = false; }}
             />
           {:else}
             <TagPill
               text={p}
+              autocomplete={autocompleteOn}
+              existingTags={realPills}
               onreplace={(next) => replaceTag(p, next)}
               ondelete={() => deleteTag(p)}
             />

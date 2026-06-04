@@ -22,6 +22,8 @@
   };
   const { filename, ondirty, onclose, onconfirmFrameOverwrite }: Props = $props();
 
+  let autocompleteOn = $derived(projectsStore.active?.tag_autocomplete ?? true);
+
   // Sentinel that renders as the empty editable "+" placeholder, matching the
   // pattern used in FrameThumb's hover panel.
   const PLACEHOLDER = " __new__";
@@ -255,6 +257,8 @@
             text=""
             startEditing
             size="md"
+            autocomplete={autocompleteOn}
+            existingTags={tags}
             onreplace={(next) => addTag(next)}
             oncancel={() => { addingTag = false; }}
           />
@@ -281,6 +285,8 @@
             <TagPill
               text={p}
               size="md"
+              autocomplete={autocompleteOn}
+              existingTags={tags}
               onreplace={(next) => replaceTag(p, next)}
               ondelete={() => deleteTag(p)}
             />
