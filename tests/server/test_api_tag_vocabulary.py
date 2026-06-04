@@ -39,3 +39,13 @@ async def test_serves_csv_when_present(client, state_dir: Path):
     assert resp.status_code == 200
     assert resp.text == body
     assert resp.headers["content-type"].startswith("text/csv")
+
+
+async def test_head_reflects_presence(client, state_dir: Path):
+    # The Settings tab probes presence with HEAD; the route must answer it
+    # (200 when present, 404 when absent) rather than 405.
+    resp = await client.head("/api/tags/vocabulary")
+    assert resp.status_code == 404
+    (state_dir / "danbooru-tags.csv").write_text("1girl,0,1,\n", encoding="utf-8")
+    resp = await client.head("/api/tags/vocabulary")
+    assert resp.status_code == 200

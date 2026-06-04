@@ -2,7 +2,13 @@
 /** Session-singleton danbooru tag vocabulary. Lazily fetches the CSV served at
  *  /api/tags/vocabulary once, builds a ranked index, and exposes search().
  *  All ranking/parsing lives in tagSearch.ts (pure + tested). */
-import { buildVocabulary, searchTags, type Suggestion, type TagEntry } from "./tagSearch";
+import {
+  MAX_TAGS,
+  parseVocabulary,
+  searchTags,
+  type Suggestion,
+  type TagEntry,
+} from "./tagSearch";
 
 class TagVocabulary {
   entries = $state<TagEntry[]>([]);
@@ -22,7 +28,15 @@ class TagVocabulary {
           this.available = false;
           return;
         }
-        this.entries = buildVocabulary(await resp.text());
+        const all = parseVocabulary(await resp.text());
+        if (all.length > MAX_TAGS) {
+          // Explicit, not a silent truncation (spec §6.2): say what was dropped.
+          console.info(
+            `[tag-vocabulary] loaded top ${MAX_TAGS} of ${all.length} tags ` +
+              `(dropped ${all.length - MAX_TAGS} low-post-count tags)`,
+          );
+        }
+        this.entries = all.length > MAX_TAGS ? all.slice(0, MAX_TAGS) : all;
         this.available = this.entries.length > 0;
       } catch {
         this.available = false;

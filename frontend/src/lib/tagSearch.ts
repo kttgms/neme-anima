@@ -85,8 +85,10 @@ function parseRow(line: string): TagEntry | null {
   return { name, nameKey: normalizeTagKey(name), category, count, aliases };
 }
 
-/** Parse the full CSV text into a ranked, capped index. */
-export function buildVocabulary(csvText: string, cap: number = MAX_TAGS): TagEntry[] {
+/** Parse the full CSV text into a ranked index, uncapped. Sorted by post
+ *  count descending. Callers that want the cap applied use buildVocabulary;
+ *  this is exposed so the caller can report how many tags fall beyond the cap. */
+export function parseVocabulary(csvText: string): TagEntry[] {
   const out: TagEntry[] = [];
   for (const line of csvText.split("\n")) {
     if (!line.trim()) continue;
@@ -94,7 +96,13 @@ export function buildVocabulary(csvText: string, cap: number = MAX_TAGS): TagEnt
     if (entry) out.push(entry);
   }
   out.sort((a, b) => b.count - a.count);
-  return out.length > cap ? out.slice(0, cap) : out;
+  return out;
+}
+
+/** Parse the full CSV text into a ranked, capped index. */
+export function buildVocabulary(csvText: string, cap: number = MAX_TAGS): TagEntry[] {
+  const all = parseVocabulary(csvText);
+  return all.length > cap ? all.slice(0, cap) : all;
 }
 
 function wordPrefix(nameKey: string, q: string): boolean {
@@ -136,7 +144,8 @@ export function searchTags(
 
 /** Compact a post count for display: 7641780 -> "7.6M", 12345 -> "12k". */
 export function formatCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  // 999_500+ rounds into the M tier so we never render "1000k".
+  if (n >= 999_500) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
 }

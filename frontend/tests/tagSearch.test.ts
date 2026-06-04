@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildVocabulary, normalizeTagKey, searchTags } from "../src/lib/tagSearch";
+import { buildVocabulary, formatCount, normalizeTagKey, searchTags } from "../src/lib/tagSearch";
+
+describe("formatCount", () => {
+  it("compacts millions and thousands", () => {
+    expect(formatCount(7_641_780)).toBe("7.6M");
+    expect(formatCount(12_345)).toBe("12k");
+    expect(formatCount(842)).toBe("842");
+  });
+  it("rounds 999999 up into the M tier instead of '1000k'", () => {
+    expect(formatCount(999_999)).toBe("1.0M");
+  });
+});
 
 const CSV = [
   '1girl,0,7641780,"sole_female,1girls"',

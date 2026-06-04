@@ -10,7 +10,10 @@ from neme_anima.tag_vocabulary import tag_vocabulary_path
 router = APIRouter(prefix="/api/tags", tags=["tags"])
 
 
-@router.get("/vocabulary")
+# GET serves the CSV; HEAD lets the Settings tab probe "is it downloaded?"
+# cheaply (Starlette's FileResponse sends headers only for HEAD). FastAPI's
+# @router.get does NOT auto-register HEAD, so list it explicitly.
+@router.api_route("/vocabulary", methods=["GET", "HEAD"])
 async def get_tag_vocabulary(request: Request) -> FileResponse:
     """Serve the downloaded danbooru tag CSV. 404 if it hasn't been fetched."""
     path = tag_vocabulary_path(request.app.state.state_dir)
