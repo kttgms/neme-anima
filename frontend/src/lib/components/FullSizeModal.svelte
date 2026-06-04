@@ -2,6 +2,9 @@
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import TagEditorPanel from "./TagEditorPanel.svelte";
+  import DescriptionEditorPanel from "./DescriptionEditorPanel.svelte";
+  import DiscardChangesDialog from "./DiscardChangesDialog.svelte";
 
   type Props = {
     /** Ordered list of frame filenames in the active view, used for ←/→ nav. */
@@ -61,6 +64,20 @@
   let imageLoadedFor = $state<string>("");
   let modified = $state(false);
   let saving = $state(false);
+
+  // Unsaved-edit state reported up by the two side-panel editors. The exit
+  // guard consults `dirty` before honoring a close / navigate request.
+  let tagsDirty = $state(false);
+  let descDirty = $state(false);
+  let dirty = $derived(tagsDirty || descDirty);
+  // A close / nav action deferred behind the discard confirmation; null when
+  // nothing is pending.
+  let pendingExit = $state<
+    { kind: "close" } | { kind: "nav"; target: number } | null
+  >(null);
+  // Transient "Crop saved ✓" toast — the modal now stays open after a crop.
+  let cropSavedFlash = $state(false);
+  let cropFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
   let scale = $derived.by(() => {
     if (!natW || !natH || !viewportW || !viewportH) return 1;
@@ -252,17 +269,42 @@
     dragStart = null;
   }
 
+  // ---------------- exit guard ----------------
+
+  function requestClose() {
+    if (dirty) { pendingExit = { kind: "close" }; return; }
+    onclose();
+  }
+  function requestNav(target: number) {
+    if (target < 0 || target >= filenames.length) return;
+    if (dirty) { pendingExit = { kind: "nav", target }; return; }
+    onnav(target);
+  }
+  function confirmExit() {
+    const ex = pendingExit;
+    pendingExit = null;
+    if (!ex) return;
+    if (ex.kind === "close") onclose();
+    else onnav(ex.target);
+  }
+  function cancelExit() {
+    pendingExit = null;
+  }
+
   // ---------------- key handling ----------------
 
   function onKey(ev: KeyboardEvent) {
+    // While the discard dialog is up it owns the keyboard (Escape there
+    // cancels the exit), so ignore everything to avoid double-handling.
+    if (pendingExit) return;
     const target = ev.target as HTMLElement | null;
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-    if (ev.key === "Escape") { onclose(); return; }
+    if (ev.key === "Escape") { requestClose(); return; }
     if (ev.key === "ArrowLeft" && index > 0) {
-      onnav(index - 1);
+      requestNav(index - 1);
       ev.preventDefault();
     } else if (ev.key === "ArrowRight" && index < filenames.length - 1) {
-      onnav(index + 1);
+      requestNav(index + 1);
       ev.preventDefault();
     } else if (ev.key === "Enter" && canConfirm) {
       void confirmCrop();
@@ -280,8 +322,16 @@
       await api.cropFrame(slug, filename, {
         x: cropX, y: cropY, width: cropW, height: cropH,
       });
+      // Keep the modal open: a crop never touches the original image (the
+      // derivative is a hidden sibling), so rebase the overlay to the saved
+      // rect, clear `modified`, and flash a confirmation instead of closing.
+      savedRect = { x: cropX, y: cropY, width: cropW, height: cropH };
+      initialX = cropX; initialY = cropY; initialW = cropW; initialH = cropH;
+      modified = false;
+      cropSavedFlash = true;
+      if (cropFlashTimer) clearTimeout(cropFlashTimer);
+      cropFlashTimer = setTimeout(() => { cropSavedFlash = false; }, 2000);
       oncropped();
-      onclose();
     } catch (e) {
       console.error("crop failed", e);
       alert("Crop failed — see console for details.");
@@ -290,7 +340,7 @@
     }
   }
 
-  onDestroy(() => { /* nothing — pointer captures release themselves */ });
+  onDestroy(() => { if (cropFlashTimer) clearTimeout(cropFlashTimer); });
 
   // Display-space helpers (used by the rect overlay).
   let rectDispX = $derived(cropX * scale);
@@ -301,26 +351,27 @@
 
 <svelte:window onkeydown={onKey} />
 
-<!-- Backdrop: click closes ONLY when click lands outside the image area.
-     Keyboard close is via `Escape` on the global listener above, so the
-     a11y "click events have key events" rule is already satisfied at the
-     window level. -->
+<!-- Backdrop: now a two-pane row (image viewport | metadata panel). Clicking
+     the backdrop or the empty viewport area requests close (guarded when there
+     are unsaved tag/description edits). Keyboard close is via Escape on the
+     window listener above. -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
-  class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-6"
+  class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex gap-4 p-6"
   role="dialog"
   aria-modal="true"
   tabindex="-1"
-  onmousedown={(e) => { if (e.target === e.currentTarget) onclose(); }}
+  onmousedown={(e) => { if (e.target === e.currentTarget) requestClose(); }}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
 >
+  <!-- LEFT: image + crop viewport -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     bind:this={viewportEl}
     role="presentation"
-    class="relative max-w-full max-h-full w-full h-full flex items-center justify-center"
-    onmousedown={(e) => { if (e.target === e.currentTarget) onclose(); }}
+    class="relative flex-1 min-w-0 h-full flex items-center justify-center"
+    onmousedown={(e) => { if (e.target === e.currentTarget) requestClose(); }}
   >
     {#if displayW > 0 && displayH > 0}
       <div
@@ -347,8 +398,7 @@
           <div class="absolute bg-black/60 pointer-events-none"
                style="left: {rectDispX + rectDispW}px; top: {rectDispY}px; right: 0; height: {rectDispH}px;"></div>
 
-          <!-- Crop rectangle: drag-to-move + 8 handles. role/tabindex kept
-               so a11y lint stays clean — the drag is mouse-only by design. -->
+          <!-- Crop rectangle: drag-to-move + 8 handles. -->
           <div
             role="application"
             aria-label="Crop rectangle, drag to move"
@@ -377,7 +427,7 @@
             {/each}
           </div>
 
-          <!-- Live size label inside the rect, top-left, dim background. -->
+          <!-- Live size label inside the rect, top-left. -->
           <div
             class="absolute pointer-events-none px-1.5 py-0.5 text-[10px] font-mono rounded bg-black/70 text-emerald-200"
             style="left: {rectDispX + 4}px; top: {rectDispY + 4}px;"
@@ -386,8 +436,7 @@
           </div>
         {/if}
 
-        <!-- Validate button: only when modified. Position top-right OUTSIDE the
-             rect overlays so it's always clickable; uses image's own corner. -->
+        <!-- Validate button: only when modified. -->
         {#if modified}
           <button
             type="button"
@@ -406,7 +455,14 @@
           </button>
         {/if}
 
-        <!-- Frame counter, bottom-center, subtle. -->
+        <!-- Crop-saved toast: shown briefly after a save; modal stays open. -->
+        {#if cropSavedFlash}
+          <div
+            class="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-emerald-500 text-white text-xs font-medium shadow-lg pointer-events-none"
+          >Crop saved ✓</div>
+        {/if}
+
+        <!-- Frame counter, bottom-center. -->
         {#if filenames.length > 1}
           <div class="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-black/60 text-[10px] text-slate-300 pointer-events-none">
             {index + 1} / {filenames.length}  ·  ←/→ to navigate
@@ -424,4 +480,23 @@
       />
     {/if}
   </div>
+
+  <!-- RIGHT: metadata panel (tags + description). Clicks here never reach the
+       backdrop's close handler because they target panel children. The panels
+       reload themselves when `filename` changes via arrow-key nav. -->
+  <aside
+    class="w-80 shrink-0 h-full bg-ink-900 border border-ink-700 rounded-lg flex flex-col gap-4 p-4 overflow-y-auto"
+  >
+    <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} />
+    <DescriptionEditorPanel {filename} ondirty={(d) => (descDirty = d)} />
+  </aside>
 </div>
+
+{#if pendingExit}
+  <DiscardChangesDialog
+    {tagsDirty}
+    {descDirty}
+    onconfirm={confirmExit}
+    oncancel={cancelExit}
+  />
+{/if}
