@@ -31,8 +31,10 @@
   let addingTag = $state(false);
   let search = $state("");
   let dragFrom = $state<number | null>(null);
-  // Index the drop would land on — drives the "|" insertion marker.
-  let dragOverIndex = $state<number | null>(null);
+  // Insertion index (0..tags.length) the drop would land at — drives the "|"
+  // marker. Computed from which side of the hovered pill's midpoint the
+  // pointer is on.
+  let dropIndex = $state<number | null>(null);
 
   let dirty = $derived(!tagsEqual(tags, savedTags));
   $effect(() => { ondirty?.(dirty); });
@@ -45,7 +47,7 @@
     addingTag = false;
     search = "";
     dragFrom = null;
-    dragOverIndex = null;
+    dropIndex = null;
     void load(fn);
   });
 
@@ -111,22 +113,32 @@
       ev.dataTransfer.effectAllowed = "move";
     }
   }
+  // Left half of the hovered pill → insert before it; right half → after it.
+  // Uses the pill's own rect so each wrapped row computes independently.
+  function insertionIndex(i: number, ev: DragEvent): number {
+    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+    return ev.clientX > rect.left + rect.width / 2 ? i + 1 : i;
+  }
   function onDragOver(i: number, ev: DragEvent) {
     if (dragFrom === null) return;
     ev.preventDefault();
     if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-    dragOverIndex = i;
+    dropIndex = insertionIndex(i, ev);
   }
   function onDrop(i: number, ev: DragEvent) {
     ev.preventDefault();
     if (dragFrom === null) return;
-    tags = reorder(tags, dragFrom, i);
+    const insertion = insertionIndex(i, ev);
+    // reorder() removes `from` before inserting, so an insertion point past
+    // the removed item shifts left by one.
+    const to = insertion > dragFrom ? insertion - 1 : insertion;
+    tags = reorder(tags, dragFrom, to);
     dragFrom = null;
-    dragOverIndex = null;
+    dropIndex = null;
   }
   function onDragEnd() {
     dragFrom = null;
-    dragOverIndex = null;
+    dropIndex = null;
   }
 
   async function save() {
@@ -212,7 +224,7 @@
         {:else}
           <!-- Insertion marker: a vertical bar showing where the dragged tag
                will drop (immediately before this pill). -->
-          {#if dragFrom !== null && dragOverIndex === i}
+          {#if dragFrom !== null && dropIndex === i}
             <span
               class="w-0.5 self-stretch min-h-[1.5rem] bg-amber-400 rounded-full"
               aria-hidden="true"
@@ -238,6 +250,14 @@
           </span>
         {/if}
       {/each}
+
+      <!-- End-of-list insertion marker (dropping past the last tag's midpoint). -->
+      {#if dragFrom !== null && dropIndex === tags.length}
+        <span
+          class="w-0.5 self-stretch min-h-[1.5rem] bg-amber-400 rounded-full"
+          aria-hidden="true"
+        ></span>
+      {/if}
 
       <button
         type="button"
