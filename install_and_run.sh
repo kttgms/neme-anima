@@ -78,7 +78,7 @@ info "models:         $MODELS_DIR"
 
 # ----- 1. uv ----------------------------------------------------------------
 
-step "1/10  Checking for uv"
+step "1/11  Checking for uv"
 
 if ! command -v uv >/dev/null 2>&1; then
     info "installing uv via the official script…"
@@ -98,7 +98,7 @@ success "uv $(uv --version | awk '{print $2}')"
 
 # ----- 2. system packages (ffmpeg, git, C compiler) ------------------------
 
-step "2/10  Checking for system packages (ffmpeg, git, C compiler)"
+step "2/11  Checking for system packages (ffmpeg, git, C compiler)"
 
 need_pkgs=()
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
@@ -164,7 +164,7 @@ fi
 
 # ----- 3. node + npm --------------------------------------------------------
 
-step "3/10  Checking for Node.js + npm"
+step "3/11  Checking for Node.js + npm"
 
 need_node=true
 if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
@@ -204,14 +204,14 @@ success "node $(node -v) / npm $(npm -v)"
 
 # ----- 4. python deps -------------------------------------------------------
 
-step "4/10  Installing Python dependencies (uv sync --group gpu)"
+step "4/11  Installing Python dependencies (uv sync --group gpu)"
 info "this fetches PyTorch CUDA wheels — first run may take several minutes…"
 uv sync --group gpu
 success "Python deps installed"
 
 # ----- 5. frontend ----------------------------------------------------------
 
-step "5/10  Building the frontend"
+step "5/11  Building the frontend"
 pushd frontend >/dev/null
 if [[ ! -d node_modules ]] || [[ package.json -nt node_modules ]]; then
     info "running npm install…"
@@ -226,7 +226,7 @@ success "frontend bundle built into src/neme_anima/server/static"
 
 # ----- 6. clone diffusion-pipe ---------------------------------------------
 
-step "6/10  Cloning tdrussell/diffusion-pipe"
+step "6/11  Cloning tdrussell/diffusion-pipe"
 if [[ -d "$DIFFUSION_PIPE_DIR/.git" ]]; then
     info "already present at $DIFFUSION_PIPE_DIR — pulling latest"
     git -C "$DIFFUSION_PIPE_DIR" pull --ff-only || warn "git pull failed (continuing with current checkout)"
@@ -240,7 +240,7 @@ success "diffusion-pipe at $DIFFUSION_PIPE_DIR"
 
 # ----- 7. diffusion-pipe venv ----------------------------------------------
 
-step "7/10  Setting up diffusion-pipe's Python venv"
+step "7/11  Setting up diffusion-pipe's Python venv"
 pushd "$DIFFUSION_PIPE_DIR" >/dev/null
 needs_dp_venv=true
 if [[ ! -d .venv ]]; then
@@ -287,7 +287,7 @@ success "diffusion-pipe venv ready"
 
 # ----- 8. download model weights --------------------------------------------
 
-step "8/10  Downloading Anima training weights"
+step "8/11  Downloading Anima training weights"
 if [[ "${SKIP_MODELS:-}" == "1" ]]; then
     warn "SKIP_MODELS=1 set — skipping ~14 GB download"
 else
@@ -351,7 +351,7 @@ fi
 
 # ----- 9. write training-defaults.json --------------------------------------
 
-step "9/10  Writing training defaults to $DEFAULTS_FILE"
+step "9/11  Writing training defaults to $DEFAULTS_FILE"
 mkdir -p "$DEFAULTS_DIR"
 cat > "$DEFAULTS_FILE" <<JSON
 {
