@@ -49,7 +49,7 @@ cd neme-anima
 bash install_and_run.sh
 ```
 
-The script installs `uv` and Node.js if they aren't already on the system, syncs the Python deps, builds the frontend, clones `tdrussell/diffusion-pipe` into `~/diffusion-pipe` and sets up its Python 3.12 venv, downloads the three Anima training weights (~14 GB) from HuggingFace, prefills the four trainer paths in the UI's Settings tab, and starts the server.
+The script installs `uv` and Node.js if they aren't already on the system, syncs the Python deps, builds the frontend, clones `tdrussell/diffusion-pipe` into `~/diffusion-pipe` and sets up its Python 3.12 venv, downloads the three Anima training weights (~14 GB) from HuggingFace, prefills the four trainer paths in the UI's Settings tab, downloads the danbooru tag list used for tag autocomplete, and starts the server.
 
 Re-running it is safe (will skip anything already in place). To update an existing one-click install, run `git pull --ff-only` and then run `bash install_and_run.sh` again; the script rebuilds the web UI.
 
@@ -61,6 +61,7 @@ Useful environment overrides:
 | `DIFFUSION_PIPE_PYTHON` | `3.12` | Python interpreter/version for diffusion-pipe's venv |
 | `MODELS_DIR` | `~/.cache/neme-anima/models` | Where to put the downloaded weights |
 | `SKIP_MODELS=1` | off | Skip the 14 GB weight download |
+| `SKIP_TAGS=1` | off | Skip the danbooru tag-list download (autocomplete) |
 | `SKIP_LAUNCH=1` | off | Install everything, but don't start the UI at the end |
 
 Linux / WSL2 only. On Linux, Node.js is installed through apt (with sudo) when available, and through nvm otherwise.
@@ -72,6 +73,12 @@ uv sync --group gpu
 ```
 
 First run downloads ~2.8 GB of weights (anime YOLOv8 person + face, CCIP, isnetis/anime-seg, WD14 with embeddings, CLIP base) to `~/.cache/huggingface/hub/`.
+
+Download the danbooru tag list used by the tag-editor autocomplete (one-time, ~5 MB into `~/.neme-anima/`):
+
+```sh
+uv run neme-anima tags fetch
+```
 
 ## CLI
 

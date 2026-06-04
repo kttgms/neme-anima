@@ -18,7 +18,8 @@
 #   8. downloads the three Anima training weight files from HuggingFace
 #   9. writes ~/.neme-anima/training-defaults.json so the UI's Settings tab
 #      shows the four trainer paths pre-filled for new projects
-#  10. launches `uv run neme-anima ui`
+#  10. downloads the danbooru tag list used for tag autocomplete
+#  11. launches `uv run neme-anima ui`
 #
 # Usage: bash install_and_run.sh
 #
@@ -29,6 +30,7 @@
 #   MODELS_DIR          where to store downloaded weights (default: ~/.cache/neme-anima/models)
 #   SKIP_MODELS=1       skip the ~14 GB weight download (useful for testing)
 #   SKIP_LAUNCH=1       install everything but don't start the UI at the end
+#   SKIP_TAGS=1         skip the danbooru tag-list download (autocomplete)
 #   DIFFUSION_PIPE_PYTHON  Python for diffusion-pipe's venv (default: 3.12)
 #
 
@@ -361,9 +363,22 @@ cat > "$DEFAULTS_FILE" <<JSON
 JSON
 success "defaults written — new projects will load these in the Settings tab"
 
-# ----- 10. launch -----------------------------------------------------------
+# ----- 10. danbooru tag list (autocomplete) --------------------------------
 
-step "10/10  Launching the UI"
+step "10/11  Downloading the danbooru tag list (tag autocomplete)"
+if [[ "${SKIP_TAGS:-}" == "1" ]]; then
+    warn "SKIP_TAGS=1 set — skipping tag-list download"
+else
+    if uv run neme-anima tags fetch; then
+        success "tag list ready"
+    else
+        warn "tag-list download failed — autocomplete stays off until you run 'uv run neme-anima tags fetch'"
+    fi
+fi
+
+# ----- 11. launch -----------------------------------------------------------
+
+step "11/11  Launching the UI"
 if [[ "${SKIP_LAUNCH:-}" == "1" ]]; then
     info "SKIP_LAUNCH=1 set — install complete, not starting the UI."
     info "to start it later, run: ${BOLD}uv run neme-anima ui${RESET}"
