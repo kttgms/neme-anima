@@ -80,4 +80,19 @@ describe("searchTags", () => {
     expect(searchTags("long", vocab, { limit: 1 }).length).toBe(1);
     expect(searchTags("   ", vocab, {})).toEqual([]);
   });
+
+  it("returns the most-popular prefix matches and stops early (no higher-count substring leaks in)", () => {
+    // 15 prefix matches plus a substring match ('scatter') with a far higher
+    // post count, which buildVocabulary sorts to the front. The early-break must
+    // still return the top-10 *prefix* matches and exclude the substring hit.
+    const rows: string[] = ["scatter,0,99999999,"];
+    for (let i = 0; i < 15; i++) rows.push(`cat_${i},0,${100000 - i},`);
+    const big = buildVocabulary(rows.join("\n"));
+    const r = searchTags("cat", big, { limit: 10 });
+    expect(r.length).toBe(10);
+    expect(r.every((s) => s.entry.name.startsWith("cat "))).toBe(true);
+    expect(r.some((s) => s.entry.name === "scatter")).toBe(false);
+    // Most popular prefix match ('cat 0', count 100000) ranks first.
+    expect(r[0].entry.name).toBe("cat 0");
+  });
 });

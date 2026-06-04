@@ -11,7 +11,12 @@ import {
 } from "./tagSearch";
 
 class TagVocabulary {
-  entries = $state<TagEntry[]>([]);
+  // $state.raw, not $state: the index is large (~100k entries) and immutable
+  // after load. Deep-proxying it would make every property read inside
+  // searchTags pay a Proxy trap on every keystroke. We only ever reassign the
+  // whole array (once, on load), which $state.raw tracks, so reactivity still
+  // fires for the `suggestions` derived without per-element proxy overhead.
+  entries = $state.raw<TagEntry[]>([]);
   /** False after a 404 (not downloaded) or a fetch error — drives the Settings
    *  hint and makes search() a no-op. */
   available = $state(true);

@@ -3,8 +3,11 @@
  *  and importable from the reactive store. */
 
 /** Max entries kept in the in-memory index, by descending post count. The
- *  danbooru list has ~400k rows; the dropped tail is near-zero-count noise. */
-export const MAX_TAGS = 100_000;
+ *  danbooru list has ~200k rows; the dropped tail is near-zero-count noise.
+ *  This also bounds the per-keystroke worst case (a query with fewer than
+ *  `limit` prefix matches scans the whole index): 30k keeps that scan ~1-2ms
+ *  while still covering far more tags than WD14 (~9k) or a human ever types. */
+export const MAX_TAGS = 30_000;
 
 /** danbooru category int -> { label, Tailwind text colour } for dropdown rows. */
 export const CATEGORY: Record<number, { label: string; color: string }> = {
@@ -105,13 +108,16 @@ export function buildVocabulary(csvText: string, cap: number = MAX_TAGS): TagEnt
   return all.length > cap ? all.slice(0, cap) : all;
 }
 
-function wordPrefix(nameKey: string, q: string): boolean {
-  return nameKey.split(" ").some((w) => w.startsWith(q));
-}
-
-/** Rank vocabulary entries for a query. Tiers (best first): exact, name-prefix,
- *  name word-prefix, name substring, alias hit. Within a tier, higher post
- *  count wins. Excludes any tag whose normalized key is in `exclude`. */
+/** Rank vocabulary entries for a query. Tiers (best first): name-prefix (incl.
+ *  exact), name word-prefix, name substring, alias hit. Within a tier, higher
+ *  post count wins. Excludes any tag whose normalized key is in `exclude`.
+ *
+ *  `entries` MUST be pre-sorted by post count descending (buildVocabulary does
+ *  this). That invariant is what lets the scan stop early: the first matches we
+ *  see in each tier are already the most popular, and once `limit` prefix
+ *  matches are found they fill the whole result, so the long, less-popular tail
+ *  can't change the answer. A common keystroke therefore scans only the first
+ *  few hundred entries instead of all ~100k. */
 export function searchTags(
   query: string,
   entries: TagEntry[],
@@ -121,25 +127,55 @@ export function searchTags(
   if (!q) return [];
   const exclude = opts.exclude ?? new Set<string>();
   const limit = opts.limit ?? 10;
+  const spaceQ = " " + q; // " <query>" — a non-first word starting with q
 
-  const scored: { s: Suggestion; tier: number }[] = [];
-  for (const e of entries) {
-    if (exclude.has(e.nameKey)) continue;
-    let tier = -1;
-    let viaAlias = false;
-    if (e.nameKey === q) tier = 0;
-    else if (e.nameKey.startsWith(q)) tier = 1;
-    else if (wordPrefix(e.nameKey, q)) tier = 2;
-    else if (e.nameKey.includes(q)) tier = 3;
-    else if (e.aliases.some((a) => a.includes(q))) {
-      tier = 4;
-      viaAlias = true;
+  // Per-tier buckets, each capped at `limit`. Filled in count-descending order
+  // because `entries` is pre-sorted, so each bucket already holds its most
+  // popular members.
+  const prefix: TagEntry[] = [];
+  const word: TagEntry[] = [];
+  const sub: TagEntry[] = [];
+  const alias: TagEntry[] = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const k = e.nameKey;
+    if (exclude.has(k)) continue;
+    if (k.startsWith(q)) {
+      prefix.push(e);
+      if (prefix.length >= limit) break; // result fully determined — stop
+      continue;
     }
-    if (tier < 0) continue;
-    scored.push({ s: { entry: e, viaAlias }, tier });
+    // Classify by tier first, then cap — a word match never leaks into `sub`.
+    if (k.includes(spaceQ)) {
+      if (word.length < limit) word.push(e);
+    } else if (k.includes(q)) {
+      if (sub.length < limit) sub.push(e);
+    } else if (alias.length < limit) {
+      const aliases = e.aliases;
+      for (let j = 0; j < aliases.length; j++) {
+        if (aliases[j].includes(q)) {
+          alias.push(e);
+          break;
+        }
+      }
+    }
   }
-  scored.sort((a, b) => a.tier - b.tier || b.s.entry.count - a.s.entry.count);
-  return scored.slice(0, limit).map((x) => x.s);
+
+  const out: Suggestion[] = [];
+  for (let i = 0; i < prefix.length && out.length < limit; i++) {
+    out.push({ entry: prefix[i], viaAlias: false });
+  }
+  for (let i = 0; i < word.length && out.length < limit; i++) {
+    out.push({ entry: word[i], viaAlias: false });
+  }
+  for (let i = 0; i < sub.length && out.length < limit; i++) {
+    out.push({ entry: sub[i], viaAlias: false });
+  }
+  for (let i = 0; i < alias.length && out.length < limit; i++) {
+    out.push({ entry: alias[i], viaAlias: true });
+  }
+  return out;
 }
 
 /** Compact a post count for display: 7641780 -> "7.6M", 12345 -> "12k". */
