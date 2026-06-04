@@ -11,8 +11,10 @@
     filename: string;
     /** Report unsaved-edit state up to the modal's discard guard. */
     ondirty?: (dirty: boolean) => void;
+    /** Close the whole modal (routed through the modal's discard guard). */
+    onclose?: () => void;
   };
-  const { filename, ondirty }: Props = $props();
+  const { filename, ondirty, onclose }: Props = $props();
 
   // Sentinel that renders as the empty editable "+" placeholder, matching the
   // pattern used in FrameThumb's hover panel.
@@ -29,6 +31,8 @@
   let addingTag = $state(false);
   let search = $state("");
   let dragFrom = $state<number | null>(null);
+  // Index the drop would land on — drives the "|" insertion marker.
+  let dragOverIndex = $state<number | null>(null);
 
   let dirty = $derived(!tagsEqual(tags, savedTags));
   $effect(() => { ondirty?.(dirty); });
@@ -41,6 +45,7 @@
     addingTag = false;
     search = "";
     dragFrom = null;
+    dragOverIndex = null;
     void load(fn);
   });
 
@@ -106,19 +111,22 @@
       ev.dataTransfer.effectAllowed = "move";
     }
   }
-  function onDragOver(ev: DragEvent) {
+  function onDragOver(i: number, ev: DragEvent) {
     if (dragFrom === null) return;
     ev.preventDefault();
     if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    dragOverIndex = i;
   }
   function onDrop(i: number, ev: DragEvent) {
     ev.preventDefault();
     if (dragFrom === null) return;
     tags = reorder(tags, dragFrom, i);
     dragFrom = null;
+    dragOverIndex = null;
   }
   function onDragEnd() {
     dragFrom = null;
+    dragOverIndex = null;
   }
 
   async function save() {
@@ -153,13 +161,24 @@
     <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">
       Tags {#if tags.length}<span class="text-slate-600">({tags.length})</span>{/if}
     </h3>
-    {#if savedFlash}
-      <span class="text-[10px] text-emerald-400">Saved ✓</span>
-    {/if}
+    <div class="flex items-center gap-2">
+      {#if savedFlash}
+        <span class="text-[10px] text-emerald-400">Saved ✓</span>
+      {/if}
+      {#if onclose}
+        <button
+          type="button"
+          onclick={onclose}
+          aria-label="Close"
+          title="Close"
+          class="w-6 h-6 rounded text-slate-400 hover:text-slate-100 hover:bg-ink-800 flex items-center justify-center text-lg leading-none transition-colors"
+        >×</button>
+      {/if}
+    </div>
   </div>
 
   <!-- Search: highlights matching tags in place (no filtering). -->
-  <div class="relative">
+  <div class="relative mt-1.5">
     <input
       bind:value={search}
       placeholder="Search tags to highlight…"
@@ -186,15 +205,24 @@
           <TagPill
             text=""
             startEditing
+            size="md"
             onreplace={(next) => addTag(next)}
             oncancel={() => { addingTag = false; }}
           />
         {:else}
+          <!-- Insertion marker: a vertical bar showing where the dragged tag
+               will drop (immediately before this pill). -->
+          {#if dragFrom !== null && dragOverIndex === i}
+            <span
+              class="w-0.5 self-stretch min-h-[1.5rem] bg-amber-400 rounded-full"
+              aria-hidden="true"
+            ></span>
+          {/if}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <span
             draggable="true"
             ondragstart={(e) => onDragStart(i, e)}
-            ondragover={onDragOver}
+            ondragover={(e) => onDragOver(i, e)}
             ondrop={(e) => onDrop(i, e)}
             ondragend={onDragEnd}
             class="inline-flex rounded-full cursor-grab active:cursor-grabbing transition-shadow
@@ -203,6 +231,7 @@
           >
             <TagPill
               text={p}
+              size="md"
               onreplace={(next) => replaceTag(p, next)}
               ondelete={() => deleteTag(p)}
             />
@@ -215,7 +244,7 @@
         onclick={() => (addingTag = true)}
         title="Add tag"
         aria-label="Add tag"
-        class="px-2 py-0.5 text-[9.5px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors self-start"
+        class="px-2 py-1 text-[12.5px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors self-start"
       >+</button>
     </div>
   {/if}

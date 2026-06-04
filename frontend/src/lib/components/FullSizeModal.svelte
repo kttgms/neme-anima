@@ -487,7 +487,7 @@
   <aside
     class="w-80 shrink-0 h-full bg-ink-900 border border-ink-700 rounded-lg flex flex-col gap-4 p-4 overflow-y-auto"
   >
-    <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} />
+    <TagEditorPanel {filename} ondirty={(d) => (tagsDirty = d)} onclose={requestClose} />
     <DescriptionEditorPanel {filename} ondirty={(d) => (descDirty = d)} />
   </aside>
 </div>

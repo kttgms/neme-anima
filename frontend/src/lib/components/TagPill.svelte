@@ -10,6 +10,9 @@
     oncancel?: () => void;
     /** Mount the pill directly in edit mode (used for the "+" placeholder). */
     startEditing?: boolean;
+    /** Visual size. "sm" (default) matches the dense thumbnail hover panel;
+     *  "md" is ~30% larger for the roomier crop-modal tag editor. */
+    size?: "sm" | "md";
   };
   const {
     text,
@@ -17,6 +20,7 @@
     ondelete,
     oncancel,
     startEditing = false,
+    size = "sm",
   }: Props = $props();
 
   let editing = $state<boolean>(startEditing);
@@ -89,6 +93,14 @@
   // treat anything that LOOKS like a character name as "important". This is
   // intentionally simple for v1; server-driven labels are a Phase 2C polish.
   let isCharacter = $derived(text.toLowerCase().includes("character"));
+
+  // "md" bumps the dense 9.5px pill up ~30% for the crop-modal tag editor,
+  // with proportionally larger padding and a wider edit input.
+  let sz = $derived(
+    size === "md"
+      ? { text: "text-[12.5px]", btn: "px-2 py-1", input: "px-2.5 py-1 w-32" }
+      : { text: "text-[9.5px]", btn: "px-1.5 py-0.5", input: "px-2 py-0.5 w-24" },
+  );
 </script>
 
 {#if editing}
@@ -99,13 +111,13 @@
     onblur={commit}
     onclick={(e) => e.stopPropagation()}
     placeholder={text === "" ? "new tag…" : ""}
-    class="px-2 py-0.5 text-[9.5px] rounded-full bg-accent-500 text-white shadow-[0_0_0_1.5px_rgba(199,210,254,1),0_0_12px_rgba(99,102,241,0.6)] outline-none w-24 placeholder-white/60"
+    class="{sz.input} {sz.text} rounded-full bg-accent-500 text-white shadow-[0_0_0_1.5px_rgba(199,210,254,1),0_0_12px_rgba(99,102,241,0.6)] outline-none placeholder-white/60"
   />
 {:else}
   <button
     type="button"
     onclick={(e) => { e.stopPropagation(); editing = true; }}
-    class="px-1.5 py-0.5 text-[9.5px] rounded-full backdrop-blur-sm border border-white/5 transition-colors
+    class="{sz.btn} {sz.text} rounded-full backdrop-blur-sm border border-white/5 transition-colors
       {isCharacter ? 'bg-amber2-500/85 text-amber-950 font-medium' : 'bg-white/15 text-white hover:bg-white/25'}"
   >
     {text}

@@ -87,7 +87,7 @@
   {:else}
     <textarea
       bind:value={text}
-      rows="5"
+      rows="10"
       placeholder="Describe the image — this becomes the second line of the .txt sidecar. Leave blank to remove the description."
       class="w-full px-3 py-2 bg-ink-950 border border-ink-700 rounded text-sm focus:outline-none focus:border-accent-500 resize-y"
     ></textarea>

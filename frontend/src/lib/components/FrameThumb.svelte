@@ -342,7 +342,7 @@
   {#if hovered || focusWithin}
     <div
       class="absolute inset-x-0 bottom-0 max-h-full overflow-y-auto p-1.5 pt-6 flex flex-wrap gap-1 items-center z-20
-        bg-gradient-to-t from-black/90 via-black/80 to-black/50 pointer-events-none"
+        bg-gradient-to-t from-black/90 via-black/75 to-transparent pointer-events-none"
     >
       <!-- pointer-events-none on the gradient + auto on each pill keeps the
            dim area between pills from intercepting clicks meant for the
