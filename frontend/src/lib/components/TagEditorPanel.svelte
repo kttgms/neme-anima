@@ -64,16 +64,25 @@
   // Only count tags still present in the working list — a selected tag that's
   // since been deleted/renamed shouldn't keep the Copy/Unselect buttons alive.
   let selectedTags = $derived(tags.filter((t) => selected.has(t)));
+  // True once the current selection has been copied; Copy stays disabled until
+  // the selection changes again (a tag is added to or removed from it).
+  let copied = $state(false);
+  // The clipboard tags that would actually be added to this frame — i.e. those
+  // not already present (paste dedupes the rest away). Drives both the Paste
+  // count and the hover preview so they match what the paste really does.
+  let pasteTags = $derived(tagClipboard.tags.filter((t) => !tags.includes(t)));
 
   function toggleSelect(tag: string) {
     const next = new Set(selected);
     if (next.has(tag)) next.delete(tag);
     else next.add(tag);
     selected = next;
+    copied = false; // selection changed → the clipboard is now stale
   }
   function copySelection() {
-    if (selectedTags.length === 0) return;
+    if (selectedTags.length === 0 || copied) return;
     tagClipboard.set(selectedTags); // order-preserving; keeps selection intact
+    copied = true;
   }
   function clearSelection() {
     selected = new Set();
@@ -96,6 +105,7 @@
     dragFrom = null;
     dropIndex = null;
     selected = new Set(); // selection is per-frame
+    copied = false;
     reviewResult = null; // discard stale suggestions for the previous frame
     void load(fn);
   });
@@ -174,15 +184,32 @@
     if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
     dropIndex = insertionIndex(i, ev);
   }
-  function onDrop(i: number, ev: DragEvent) {
-    ev.preventDefault();
+  // The whole container is a drop zone so a tag can be dropped in the gaps
+  // between pills (or anywhere we're showing the marker), not only when the
+  // pointer is over a pill. The per-pill onDragOver keeps `dropIndex` precise
+  // while over a pill; in the gaps it simply retains the last position, so the
+  // drop lands wherever the ghost bar is shown.
+  function onContainerDragOver(ev: DragEvent) {
     if (dragFrom === null) return;
-    const insertion = insertionIndex(i, ev);
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  }
+  function onContainerDrop(ev: DragEvent) {
+    ev.preventDefault();
+    if (dragFrom === null || dropIndex === null) return;
     // reorder() removes `from` before inserting, so an insertion point past
     // the removed item shifts left by one.
-    const to = insertion > dragFrom ? insertion - 1 : insertion;
+    const to = dropIndex > dragFrom ? dropIndex - 1 : dropIndex;
     tags = reorder(tags, dragFrom, to);
     dragFrom = null;
+    dropIndex = null;
+  }
+  function onContainerDragLeave(ev: DragEvent) {
+    if (dragFrom === null) return;
+    // dragleave also fires when crossing between child pills; only drop the
+    // marker (and the drop target) when the pointer truly leaves the container.
+    const related = ev.relatedTarget as Node | null;
+    if (related && (ev.currentTarget as HTMLElement).contains(related)) return;
     dropIndex = null;
   }
   function onDragEnd() {
@@ -332,8 +359,16 @@
     <p class="text-slate-500 text-xs py-4 text-center">Loading…</p>
   {:else}
     <!-- Scrollable, grows to fill the column. Drag a pill to reorder; click to
-         edit; empty-commit deletes; "+" adds. -->
-    <div class="flex flex-wrap gap-1.5 content-start overflow-y-auto flex-1 min-h-0 pr-1">
+         edit; empty-commit deletes; "+" adds. The container is the drop zone so
+         drops land in the gaps between pills too (ondragover/ondrop here);
+         leaving the container clears the insertion marker. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      ondragover={onContainerDragOver}
+      ondrop={onContainerDrop}
+      ondragleave={onContainerDragLeave}
+      class="flex flex-wrap gap-1.5 content-start overflow-y-auto flex-1 min-h-0 pr-1"
+    >
       {#each pills as p, i (p === PLACEHOLDER ? `__new__${i}` : p)}
         {#if p === PLACEHOLDER}
           <TagPill
@@ -359,7 +394,6 @@
             draggable="true"
             ondragstart={(e) => onDragStart(i, e)}
             ondragover={(e) => onDragOver(i, e)}
-            ondrop={(e) => onDrop(i, e)}
             ondragend={onDragEnd}
             onmousedown={(e) => { if (e.button === 1) e.preventDefault(); }}
             onauxclick={(e) => { if (e.button === 1) { e.preventDefault(); toggleSelect(p); } }}
@@ -494,9 +528,12 @@
       <button
         type="button"
         onclick={copySelection}
-        title="Copy the {selectedTags.length} selected tag{selectedTags.length === 1 ? '' : 's'} to the clipboard"
-        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white"
-      >Copy {selectedTags.length}</button>
+        disabled={copied}
+        title={copied
+          ? "Copied — select or deselect a tag to copy again"
+          : `Copy the ${selectedTags.length} selected tag${selectedTags.length === 1 ? "" : "s"} to the clipboard`}
+        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      >{copied ? "Copied ✓" : `Copy ${selectedTags.length}`}</button>
       <button
         type="button"
         onclick={clearSelection}
@@ -505,14 +542,34 @@
       >Unselect</button>
     {:else if tagClipboard.size > 0}
       <!-- Nothing selected here but the clipboard holds tags from another frame:
-           offer to append them (deduped) to this frame's tags. -->
-      <button
-        type="button"
-        onclick={pasteClipboard}
-        disabled={loading}
-        title="Append the {tagClipboard.size} copied tag{tagClipboard.size === 1 ? '' : 's'} to this frame (duplicates are ignored)"
-        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
-      >Paste {tagClipboard.size}</button>
+           offer to append them (deduped) to this frame's tags. Hovering the
+           button previews the exact tags that will be pasted. -->
+      <div class="relative group">
+        <button
+          type="button"
+          onclick={pasteClipboard}
+          disabled={loading || pasteTags.length === 0}
+          class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        >Paste {pasteTags.length}</button>
+        <div
+          class="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-20 hidden group-hover:block"
+        >
+          <div class="w-56 max-h-48 overflow-hidden rounded border border-ink-700 bg-ink-900 shadow-lg p-2">
+            {#if pasteTags.length}
+              <p class="text-[10px] uppercase tracking-wide text-slate-400 mb-1">
+                Will paste ({pasteTags.length})
+              </p>
+              <div class="flex flex-wrap gap-1">
+                {#each pasteTags as t}
+                  <span class="px-1.5 py-0.5 text-[10px] leading-none rounded-full bg-white/10 text-slate-200">{t}</span>
+                {/each}
+              </div>
+            {:else}
+              <p class="text-[10px] text-slate-400">All {tagClipboard.size} copied tag{tagClipboard.size === 1 ? "" : "s"} are already on this frame.</p>
+            {/if}
+          </div>
+        </div>
+      </div>
     {/if}
     {#if llmModelSelected}
       <button
