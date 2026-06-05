@@ -3,6 +3,7 @@
   import * as api from "$lib/api";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
   import { parseTags, splitSidecar } from "$lib/sidecar";
   import { matchesQuery, reorder, tagsEqual } from "$lib/tagList";
   import TagPill from "./TagPill.svelte";
@@ -56,6 +57,32 @@
   // pointer is on.
   let dropIndex = $state<number | null>(null);
 
+  // ---- middle-click tag selection (per-frame, staging-only) ----
+  // Middle-clicking a pill toggles it in/out of this set. The set is keyed by
+  // tag text and reset whenever the frame changes (see the reload effect).
+  let selected = $state<Set<string>>(new Set());
+  // Only count tags still present in the working list — a selected tag that's
+  // since been deleted/renamed shouldn't keep the Copy/Unselect buttons alive.
+  let selectedTags = $derived(tags.filter((t) => selected.has(t)));
+
+  function toggleSelect(tag: string) {
+    const next = new Set(selected);
+    if (next.has(tag)) next.delete(tag);
+    else next.add(tag);
+    selected = next;
+  }
+  function copySelection() {
+    if (selectedTags.length === 0) return;
+    tagClipboard.set(selectedTags); // order-preserving; keeps selection intact
+  }
+  function clearSelection() {
+    selected = new Set();
+  }
+  function pasteClipboard() {
+    if (tagClipboard.size === 0) return;
+    tags = dedupe([...tags, ...tagClipboard.tags]); // append + dedupe → marks dirty
+  }
+
   let dirty = $derived(!tagsEqual(tags, savedTags));
   $effect(() => { ondirty?.(dirty); });
 
@@ -68,6 +95,7 @@
     search = "";
     dragFrom = null;
     dropIndex = null;
+    selected = new Set(); // selection is per-frame
     reviewResult = null; // discard stale suggestions for the previous frame
     void load(fn);
   });
@@ -333,8 +361,11 @@
             ondragover={(e) => onDragOver(i, e)}
             ondrop={(e) => onDrop(i, e)}
             ondragend={onDragEnd}
+            onmousedown={(e) => { if (e.button === 1) e.preventDefault(); }}
+            onauxclick={(e) => { if (e.button === 1) { e.preventDefault(); toggleSelect(p); } }}
+            title="Middle-click to select"
             class="inline-flex rounded-full cursor-grab active:cursor-grabbing transition-shadow
-              {matchesQuery(p, search) ? 'ring-2 ring-amber-400' : ''}
+              {selected.has(p) ? 'ring-2 ring-sky-400' : matchesQuery(p, search) ? 'ring-2 ring-amber-400' : ''}
               {dragFrom === i ? 'opacity-40' : ''}"
           >
             <TagPill
@@ -457,6 +488,32 @@
   {/if}
 
   <div class="flex justify-end gap-2">
+    {#if selectedTags.length > 0}
+      <!-- A tag selection exists (middle-click): copy it to the clipboard, or
+           clear the selection. -->
+      <button
+        type="button"
+        onclick={copySelection}
+        title="Copy the {selectedTags.length} selected tag{selectedTags.length === 1 ? '' : 's'} to the clipboard"
+        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white"
+      >Copy {selectedTags.length}</button>
+      <button
+        type="button"
+        onclick={clearSelection}
+        title="Clear the tag selection"
+        class="px-4 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300"
+      >Unselect</button>
+    {:else if tagClipboard.size > 0}
+      <!-- Nothing selected here but the clipboard holds tags from another frame:
+           offer to append them (deduped) to this frame's tags. -->
+      <button
+        type="button"
+        onclick={pasteClipboard}
+        disabled={loading}
+        title="Append the {tagClipboard.size} copied tag{tagClipboard.size === 1 ? '' : 's'} to this frame (duplicates are ignored)"
+        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      >Paste {tagClipboard.size}</button>
+    {/if}
     {#if llmModelSelected}
       <button
         type="button"
