@@ -3,6 +3,7 @@
   import * as api from "$lib/api";
   import { createAsyncLoad } from "$lib/composables/asyncLoad.svelte";
   import { createFlash } from "$lib/composables/flash.svelte";
+  import { reportDirty } from "$lib/composables/reportDirty.svelte";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
@@ -93,7 +94,7 @@
   }
 
   let dirty = $derived(!tagsEqual(tags, savedTags));
-  $effect(() => { ondirty?.(dirty); });
+  reportDirty(() => dirty, () => ondirty);
 
   // Reload whenever the displayed frame changes (arrow-key nav in the modal).
   $effect(() => {
