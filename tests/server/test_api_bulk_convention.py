@@ -22,14 +22,23 @@ def project_with_frames(tmp_path: Path) -> Project:
         name = f"{stem}__s000_t001_f{fi:06}"
         Image.fromarray(img).save(p.kept_dir / f"{name}.png")
         (p.kept_dir / f"{name}.txt").write_text("1girl, smile\n")
-        MetadataLog(p.metadata_path).append(FrameRecord(
-            filename=name, kept=True,
-            scene_idx=0, tracklet_id=1, frame_idx=fi,
-            timestamp_seconds=fi / 24.0,
-            bbox=(0, 0, 16, 16),
-            ccip_distance=0.1, sharpness=10.0, visibility=1.0, aspect=0.95,
-            score=0.9, video_stem=stem,
-        ))
+        MetadataLog(p.metadata_path).append(
+            FrameRecord(
+                filename=name,
+                kept=True,
+                scene_idx=0,
+                tracklet_id=1,
+                frame_idx=fi,
+                timestamp_seconds=fi / 24.0,
+                bbox=(0, 0, 16, 16),
+                ccip_distance=0.1,
+                sharpness=10.0,
+                visibility=1.0,
+                aspect=0.95,
+                score=0.9,
+                video_stem=stem,
+            )
+        )
     return p
 
 
@@ -58,7 +67,7 @@ async def test_bulk_delete_reports_skipped(client, project_with_frames: Project)
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["deleted"] == 1          # existing key preserved
+    assert body["deleted"] == 1  # existing key preserved
     assert body["total"] == 2
     assert body["skipped"] == [{"filename": "ghost", "reason": "not found on disk"}]
 
@@ -67,8 +76,7 @@ async def test_bulk_tags_replace_reports_skipped(client, project_with_frames: Pr
     (project_with_frames.kept_dir / f"{FRAME2}.txt").unlink()
     resp = await client.post(
         f"/api/projects/{project_with_frames.slug}/frames/bulk-tags-replace",
-        json={"filenames": [FRAME1, FRAME2], "pattern": "smile",
-              "replacement": "frown"},
+        json={"filenames": [FRAME1, FRAME2], "pattern": "smile", "replacement": "frown"},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -78,7 +86,8 @@ async def test_bulk_tags_replace_reports_skipped(client, project_with_frames: Pr
 
 
 async def test_bulk_move_reports_skipped_with_reason(
-    client, project_with_frames: Project,
+    client,
+    project_with_frames: Project,
 ):
     target = project_with_frames.characters[0].slug
     resp = await client.post(
@@ -96,7 +105,8 @@ async def test_bulk_move_reports_skipped_with_reason(
 
 
 async def test_bulk_duplicate_skips_diskless_frame_instead_of_aborting(
-    client, project_with_frames: Project,
+    client,
+    project_with_frames: Project,
 ):
     """A frame with metadata but no PNG must become a skip, not a 404 that
     aborts the batch after partial work."""
@@ -116,7 +126,8 @@ async def test_bulk_duplicate_skips_diskless_frame_instead_of_aborting(
 
 
 async def test_single_duplicate_of_diskless_frame_still_404s(
-    client, project_with_frames: Project,
+    client,
+    project_with_frames: Project,
 ):
     (project_with_frames.kept_dir / f"{FRAME1}.png").unlink()
     target = project_with_frames.characters[0].slug
@@ -128,7 +139,9 @@ async def test_single_duplicate_of_diskless_frame_still_404s(
 
 
 async def test_bulk_retag_danbooru_skips_ghost_frame(
-    client, app, project_with_frames: Project,
+    client,
+    app,
+    project_with_frames: Project,
 ):
     """A ghost filename (no PNG on disk) becomes a skip entry with reason
     'frame not found on disk'; the real frame still gets retagged."""
@@ -158,7 +171,9 @@ async def test_bulk_retag_danbooru_skips_ghost_frame(
 
 
 async def test_bulk_retag_danbooru_skips_on_tagger_exception(
-    client, app, project_with_frames: Project,
+    client,
+    app,
+    project_with_frames: Project,
 ):
     """When the WD14 tagger raises for a frame the batch must not abort:
     the frame is added to skipped with the exception class + message as
@@ -182,7 +197,9 @@ async def test_bulk_retag_danbooru_skips_on_tagger_exception(
 
 
 async def test_bulk_retag_llm_skips_ghost_frame(
-    client, project_with_frames: Project, monkeypatch,
+    client,
+    project_with_frames: Project,
+    monkeypatch,
 ):
     """A ghost filename on the LLM retag path becomes a skip entry with
     reason 'frame not found on disk'; an existing real frame is still described."""
@@ -192,7 +209,13 @@ async def test_bulk_retag_llm_skips_ghost_frame(
     project_with_frames.save()
 
     def fake_describe_image(
-        *, endpoint, model, image_path, prompt, danbooru_tags, api_key=None,
+        *,
+        endpoint,
+        model,
+        image_path,
+        prompt,
+        danbooru_tags,
+        api_key=None,
     ):
         return "A described frame."
 

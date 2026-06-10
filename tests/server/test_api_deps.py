@@ -62,7 +62,8 @@ async def test_source_index_out_of_range(client, project: Project):
 
 async def test_unknown_character_path_param(client, project: Project):
     resp = await client.patch(
-        f"/api/projects/{project.slug}/characters/nope", json={"name": "x"},
+        f"/api/projects/{project.slug}/characters/nope",
+        json={"name": "x"},
     )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "unknown character: nope"

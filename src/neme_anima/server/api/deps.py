@@ -35,13 +35,15 @@ def get_project(slug: str, request: Request) -> Project:
 
 
 def get_character(
-    character_slug: str, project: Project = Depends(get_project),  # noqa: B008
+    character_slug: str,
+    project: Project = Depends(get_project),  # noqa: B008
 ) -> Character:
     """Resolve the ``{character_slug}`` path param within the project, or 404."""
     c = project.character_by_slug(character_slug)
     if c is None:
         raise HTTPException(
-            status_code=404, detail=f"unknown character: {character_slug}",
+            status_code=404,
+            detail=f"unknown character: {character_slug}",
         )
     return c
 

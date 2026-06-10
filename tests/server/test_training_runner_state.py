@@ -23,9 +23,14 @@ def project(tmp_path: Path) -> Project:
 
 def test_persist_then_load_roundtrip(project: Project):
     st = RunState(
-        project_slug=project.slug, run_dir="/tmp/run", status="running",
+        project_slug=project.slug,
+        run_dir="/tmp/run",
+        status="running",
         started_at="2026-06-10T00:00:00+00:00",
-        epoch=3, step=10, loss=0.5, last_log_line="hello",
+        epoch=3,
+        step=10,
+        loss=0.5,
+        last_log_line="hello",
     )
     _persist_state(project, st)
     loaded = _load_persisted_state(project)
@@ -44,7 +49,8 @@ def test_corrupt_json_logs_warning_and_returns_none(project: Project, caplog):
 
 
 def test_missing_required_key_logs_warning_and_returns_none(
-    project: Project, caplog,
+    project: Project,
+    caplog,
 ):
     project.training_dir.mkdir(parents=True, exist_ok=True)
     project.training_state_path.write_text(json.dumps({"status": "stopped"}))
