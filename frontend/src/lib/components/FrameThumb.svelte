@@ -6,7 +6,7 @@
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
   import { parseTags, splitSidecar } from "$lib/sidecar";
-  import TagPill from "./TagPill.svelte";
+  import TagList from "./TagList.svelte";
 
   type Props = {
     frame: FrameRecord;
@@ -71,12 +71,6 @@
   // spinner overlay and swallow clicks so the user can't kick off a preview
   // or toggle selection on a tile that's actively being written to.
   let processing = $derived(framesStore.processing.has(frame.filename));
-
-  // A sentinel value that, when present in `pills`, renders as the empty
-  // editable placeholder created by the "+" button. Picked to be impossible
-  // to confuse with a real tag.
-  const PLACEHOLDER = " __new__";
-  let addingTag = $state(false);
 
   // One-shot pop animation on the description badge. Driven by a per-filename
   // version counter in framesStore that ActionBar bumps when a single-frame
@@ -161,40 +155,13 @@
     return desc || "Has description";
   });
 
-  // realPills + (placeholder when adding). Drives the rendered list; the
-  // placeholder isn't part of saved state until the user commits.
-  let pills = $derived(addingTag ? [...realPills, PLACEHOLDER] : realPills);
-
-  function replaceTag(oldTag: string, newTag: string) {
-    const next = realPills.map((t) => (t === oldTag ? newTag : t)).join(", ");
-    void saveTagsLine(next);
-  }
-
-  function deleteTag(oldTag: string) {
-    const next = realPills.filter((t) => t !== oldTag).join(", ");
-    void saveTagsLine(next);
-  }
-
-  function addTag(newTag: string) {
-    addingTag = false;
-    const trimmed = newTag.trim();
-    if (!trimmed) return;
-    // Always go through the save round-trip — even for an exact duplicate.
-    // The server dedupes in join_sidecar and the response is what we write
-    // back into tagText, so the pill list ends up identical to what was
-    // already there. Skipping the save short-circuited too aggressively in
-    // practice: when the user committed a duplicate, the placeholder was
-    // unmounted without any write firing, and the next render cycle could
-    // leave the keyed `each` out of sync with realPills. The HTTP roundtrip
-    // is cheap; correctness wins.
-    const next = [...realPills, trimmed].join(", ");
-    void saveTagsLine(next);
-  }
-
-  function startAddingTag(ev: MouseEvent) {
-    ev.stopPropagation();
-    void loadTags();
-    addingTag = true;
+  // Auto-save surface: every edit/add/delete/(reorder—disabled here) from the
+  // shared TagList fires the save round-trip immediately. saveTagsLine takes a
+  // comma-joined danbooru line and writes back the server-normalized response
+  // into tagText. The HTTP roundtrip even for an exact-duplicate add is
+  // intentional (server dedupes; response keeps the keyed list in sync).
+  function onTagsChange(next: string[]) {
+    void saveTagsLine(next.join(", "));
   }
 
   // Middle-click (auxclick with button === 1) on the image toggles selection.
@@ -350,37 +317,15 @@
            dim area between pills from intercepting clicks meant for the
            image preview. -->
       <div class="contents pointer-events-auto">
-        {#each pills as p, i (p === PLACEHOLDER ? `__new__${i}` : p)}
-          {#if p === PLACEHOLDER}
-            <TagPill
-              text=""
-              startEditing
-              autocomplete={autocompleteOn}
-              existingTags={realPills}
-              onreplace={(next) => addTag(next)}
-              oncancel={() => { addingTag = false; }}
-            />
-          {:else}
-            <TagPill
-              text={p}
-              autocomplete={autocompleteOn}
-              existingTags={realPills}
-              onreplace={(next) => replaceTag(p, next)}
-              ondelete={() => deleteTag(p)}
-            />
-          {/if}
-        {/each}
-
-        <!-- "+" pill: same shape/size family as the tag pills so it reads
-             as part of the row, not a floating action button. -->
-        <button
-          type="button"
-          onclick={startAddingTag}
-          title="Add tag"
-          aria-label="Add tag"
-          class="px-2 py-0.5 text-[9.5px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors"
-        >+</button>
-
+        <!-- Auto-save surface: TagList renders the dense pills + "+" and fires
+             onTagsChange (immediate save) on every edit. Drag/search/select
+             stay off so the grid hover panel keeps its minimal shape. -->
+        <TagList
+          tags={realPills}
+          onchange={onTagsChange}
+          size="sm"
+          autocomplete={autocompleteOn}
+        />
       </div>
     </div>
   {/if}
