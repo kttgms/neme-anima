@@ -17,7 +17,8 @@ from pydantic import BaseModel
 from neme_anima.server.api import deps
 from neme_anima.storage.metadata import FrameRecord, MetadataLog
 from neme_anima.storage.project import CROP_SUFFIX, Project
-from neme_anima.tag import join_sidecar, split_sidecar
+from neme_anima.storage.sidecar import read_sidecar, update_sidecar
+from neme_anima.tag import split_sidecar
 from neme_anima.tag_vocabulary import tag_vocabulary_path
 
 logger = logging.getLogger(__name__)
@@ -209,13 +210,7 @@ def _frame_matches_tag_query(
     """Return True iff every positive token is present and every negation is absent."""
     if not tokens:
         return True
-    haystack = ""
-    if txt_path.is_file():
-        try:
-            danbooru, _ = split_sidecar(txt_path.read_text(encoding="utf-8"))
-            haystack = danbooru.lower()
-        except OSError:
-            haystack = ""
+    haystack = read_sidecar(txt_path)[0].lower()
     for is_neg, tok in tokens:
         present = tok in haystack
         if is_neg and present:
@@ -233,13 +228,7 @@ def _sidecar_flags(txt_path: Path) -> dict[str, bool]:
     grid badges stay honest. The files are tiny (a few hundred bytes) so this
     is cheap.
     """
-    empty = {"has_tags": False, "has_description": False}
-    if not txt_path.is_file():
-        return empty
-    try:
-        danbooru, description = split_sidecar(txt_path.read_text(encoding="utf-8"))
-    except OSError:
-        return empty
+    danbooru, description = read_sidecar(txt_path)
     return {"has_tags": bool(danbooru), "has_description": bool(description)}
 
 
@@ -285,13 +274,9 @@ async def put_tags(
     if not png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
     danbooru, description = split_sidecar(body.text)
-    if not description and txt.exists():
-        try:
-            _, description = split_sidecar(txt.read_text(encoding="utf-8"))
-        except OSError:
-            description = ""
-    final = join_sidecar(danbooru, description)
-    txt.write_text(final, encoding="utf-8")
+    # No description line in the body means "preserve what's on disk" —
+    # see the docstring; an explicit two-line body still overwrites.
+    final = update_sidecar(txt, tags=danbooru, description=description or None)
     # Return what was actually saved (post-dedupe), without the trailing
     # newline join_sidecar adds — the frontend uses this to refresh its
     # local tag cache, so any normalization the route applied stays
@@ -303,9 +288,7 @@ async def put_tags(
 async def get_description(filename: str, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Return only the LLM description (line 2 of the sidecar)."""
     _, txt = _frame_paths(project, filename)
-    if not txt.exists():
-        return {"text": ""}
-    _, description = split_sidecar(txt.read_text(encoding="utf-8"))
+    _, description = read_sidecar(txt)
     return {"text": description}
 
 
@@ -317,10 +300,7 @@ async def put_description(
     png, txt = _frame_paths(project, filename)
     if not png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
-    danbooru = ""
-    if txt.exists():
-        danbooru, _ = split_sidecar(txt.read_text(encoding="utf-8"))
-    txt.write_text(join_sidecar(danbooru, body.text), encoding="utf-8")
+    update_sidecar(txt, description=body.text)
     return {"text": body.text}
 
 
@@ -395,11 +375,10 @@ async def bulk_tags_replace(
         _, txt = _frame_paths(project, filename)
         if not txt.exists():
             continue
-        before = txt.read_text(encoding="utf-8")
-        danbooru, description = split_sidecar(before)
+        danbooru, _description = read_sidecar(txt)
         new_danbooru, n = regex.subn(body.replacement, danbooru)
         if n > 0 and new_danbooru != danbooru:
-            txt.write_text(join_sidecar(new_danbooru, description), encoding="utf-8")
+            update_sidecar(txt, tags=new_danbooru)
             changed += n
     return {"changed": changed}
 
@@ -425,9 +404,7 @@ async def bulk_retag_danbooru(
         with Image.open(png) as im:
             arr = np.array(im.convert("RGB"))
         new_danbooru = tagger.tag(arr).text
-        old_text = txt.read_text(encoding="utf-8") if txt.exists() else ""
-        _, description = split_sidecar(old_text)
-        txt.write_text(join_sidecar(new_danbooru, description), encoding="utf-8")
+        update_sidecar(txt, tags=new_danbooru)
         return True, eff
 
     retagged = 0
@@ -477,8 +454,7 @@ async def bulk_retag_llm(body: BulkRetagBody, project: Project = Depends(deps.ge
         png, txt, eff = _resolve_tag_target(project, filename)
         if not png.is_file():
             return False, None, None
-        old_text = txt.read_text(encoding="utf-8") if txt.exists() else ""
-        danbooru, _ = split_sidecar(old_text)
+        danbooru, _ = read_sidecar(txt)
         try:
             description = describe_image(
                 endpoint=endpoint, model=model, image_path=png,
@@ -487,7 +463,7 @@ async def bulk_retag_llm(body: BulkRetagBody, project: Project = Depends(deps.ge
             )
         except LLMUnavailable as exc:
             return False, str(exc), eff
-        txt.write_text(join_sidecar(danbooru, description), encoding="utf-8")
+        update_sidecar(txt, description=description)
         return True, None, eff
 
     described = 0
@@ -619,7 +595,7 @@ async def review_frame_tags(
     png, txt, eff = _resolve_tag_target(project, filename)
     if not png.is_file():
         raise HTTPException(status_code=404, detail="frame not found")
-    danbooru, _ = split_sidecar(txt.read_text(encoding="utf-8") if txt.exists() else "")
+    danbooru, _ = read_sidecar(txt)
     existing = _parse_tag_line(danbooru)
 
     endpoint = project.llm.endpoint
@@ -901,8 +877,8 @@ async def ingest_kept_image(
             llm_error = f"{type(exc).__name__}: {exc}"
             description = ""
 
-    png_path.with_suffix(".txt").write_text(
-        join_sidecar(tag_text, description), encoding="utf-8",
+    update_sidecar(
+        png_path.with_suffix(".txt"), tags=tag_text, description=description,
     )
 
     rec = FrameRecord(
