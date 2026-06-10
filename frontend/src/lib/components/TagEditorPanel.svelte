@@ -8,9 +8,9 @@
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
   import { parseTags, splitSidecar } from "$lib/sidecar";
-  import { matchesQuery, reorder, tagsEqual } from "$lib/tagList";
+  import { tagsEqual } from "$lib/tagList";
   import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
-  import TagPill from "./TagPill.svelte";
+  import TagList from "./TagList.svelte";
 
   type Props = {
     filename: string;
@@ -28,19 +28,13 @@
   // model has been picked in Settings.
   let llmModelSelected = $derived(!!projectsStore.active?.llm?.model);
 
-  // Sentinel that renders as the empty editable "+" placeholder, matching the
-  // pattern used in FrameThumb's hover panel.
-  const PLACEHOLDER = " __new__";
-
   let savedTags = $state<string[]>([]); // last-persisted baseline
   let tags = $state<string[]>([]); // local working copy
   const loader = createAsyncLoad();
   let saving = $state(false);
   const savedFlash = createFlash();
 
-  let addingTag = $state(false);
   let tagging = $state(false);
-  let search = $state("");
 
   // ---- LLM tag review (staged: applies into `tags`, not the server) ----
   let reviewing = $state(false);
@@ -49,45 +43,43 @@
   // text; default all-checked when a review arrives.
   let acceptRemove = $state<Set<string>>(new Set());
   let acceptAdd = $state<Set<string>>(new Set());
-  let dragFrom = $state<number | null>(null);
-  // Insertion index (0..tags.length) the drop would land at — drives the "|"
-  // marker. Computed from which side of the hovered pill's midpoint the
-  // pointer is on.
-  let dropIndex = $state<number | null>(null);
 
-  // ---- middle-click tag selection (per-frame, staging-only) ----
-  // Middle-clicking a pill toggles it in/out of this set. The set is keyed by
-  // tag text and reset whenever the frame changes (see the reload effect).
-  let selected = $state<Set<string>>(new Set());
-  // Only count tags still present in the working list — a selected tag that's
-  // since been deleted/renamed shouldn't keep the Copy/Unselect buttons alive.
-  let selectedTags = $derived(tags.filter((t) => selected.has(t)));
+  // ---- middle-click tag selection (surfaced from TagList; staging-only) ----
+  // TagList owns the selection ring; it reports the selected subset here so we
+  // can render the Copy/Unselect/Paste buttons. We hold an imperative clear
+  // that TagList binds, so Copy/Unselect can reset the ring.
+  let selectedTags = $state<string[]>([]);
+  let clearTagSelection = $state<(() => void) | undefined>(undefined);
   // True once the current selection has been copied; Copy stays disabled until
-  // the selection changes again (a tag is added to or removed from it).
+  // the selection changes again.
   let copied = $state(false);
   // The clipboard tags that would actually be added to this frame — i.e. those
   // not already present (paste dedupes the rest away). Drives both the Paste
   // count and the hover preview so they match what the paste really does.
   let pasteTags = $derived(tagClipboard.tags.filter((t) => !tags.includes(t)));
 
-  function toggleSelect(tag: string) {
-    const next = new Set(selected);
-    if (next.has(tag)) next.delete(tag);
-    else next.add(tag);
-    selected = next;
-    copied = false; // selection changed → the clipboard is now stale
+  // Reset the "copied" latch whenever the surfaced selection changes.
+  function onSelectionChange(next: string[]) {
+    // Equal-length-and-content check avoids resetting `copied` on a no-op
+    // re-emit (e.g. the tags array changing identity but the selection not).
+    const changed =
+      next.length !== selectedTags.length ||
+      next.some((t, i) => t !== selectedTags[i]);
+    selectedTags = next;
+    if (changed) copied = false;
   }
+
   function copySelection() {
     if (selectedTags.length === 0 || copied) return;
     tagClipboard.set(selectedTags); // order-preserving; keeps selection intact
     copied = true;
   }
   function clearSelection() {
-    selected = new Set();
+    clearTagSelection?.();
   }
   function pasteClipboard() {
     if (tagClipboard.size === 0) return;
-    tags = dedupe([...tags, ...tagClipboard.tags]); // append + dedupe → marks dirty
+    tags = dedupe([...tags, ...tagClipboard.tags]); // append + dedupe → dirty
   }
 
   let dirty = $derived(!tagsEqual(tags, savedTags));
@@ -96,13 +88,9 @@
   // Reload whenever the displayed frame changes (arrow-key nav in the modal).
   $effect(() => {
     const fn = filename;
-    addingTag = false;
-    search = "";
-    dragFrom = null;
-    dropIndex = null;
-    selected = new Set(); // selection is per-frame
-    copied = false;
     reviewResult = null; // discard stale suggestions for the previous frame
+    copied = false;
+    clearTagSelection?.(); // selection is per-frame
     void load(fn);
   });
 
@@ -123,9 +111,6 @@
     );
   }
 
-  // Rendered list = working tags + the placeholder while adding.
-  let pills = $derived(addingTag ? [...tags, PLACEHOLDER] : tags);
-
   function dedupe(list: string[]): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
@@ -135,80 +120,6 @@
       out.push(t);
     }
     return out;
-  }
-
-  function replaceTag(oldTag: string, next: string) {
-    tags = dedupe(tags.map((t) => (t === oldTag ? next : t)));
-  }
-
-  function deleteTag(oldTag: string) {
-    tags = tags.filter((t) => t !== oldTag);
-  }
-
-  function addTag(next: string) {
-    addingTag = false;
-    const trimmed = next.trim();
-    if (!trimmed) return;
-    tags = dedupe([...tags, trimmed]);
-  }
-
-  // ---- drag-to-reorder ----
-  function onDragStart(i: number, ev: DragEvent) {
-    // Don't hijack text selection when a pill is in its edit input.
-    const t = ev.target as HTMLElement | null;
-    if (t && (t.tagName === "INPUT" || t.isContentEditable)) {
-      ev.preventDefault();
-      return;
-    }
-    dragFrom = i;
-    if (ev.dataTransfer) {
-      ev.dataTransfer.setData("text/plain", String(i));
-      ev.dataTransfer.effectAllowed = "move";
-    }
-  }
-  // Left half of the hovered pill → insert before it; right half → after it.
-  // Uses the pill's own rect so each wrapped row computes independently.
-  function insertionIndex(i: number, ev: DragEvent): number {
-    const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-    return ev.clientX > rect.left + rect.width / 2 ? i + 1 : i;
-  }
-  function onDragOver(i: number, ev: DragEvent) {
-    if (dragFrom === null) return;
-    ev.preventDefault();
-    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-    dropIndex = insertionIndex(i, ev);
-  }
-  // The whole container is a drop zone so a tag can be dropped in the gaps
-  // between pills (or anywhere we're showing the marker), not only when the
-  // pointer is over a pill. The per-pill onDragOver keeps `dropIndex` precise
-  // while over a pill; in the gaps it simply retains the last position, so the
-  // drop lands wherever the ghost bar is shown.
-  function onContainerDragOver(ev: DragEvent) {
-    if (dragFrom === null) return;
-    ev.preventDefault();
-    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
-  }
-  function onContainerDrop(ev: DragEvent) {
-    ev.preventDefault();
-    if (dragFrom === null || dropIndex === null) return;
-    // reorder() removes `from` before inserting, so an insertion point past
-    // the removed item shifts left by one.
-    const to = dropIndex > dragFrom ? dropIndex - 1 : dropIndex;
-    tags = reorder(tags, dragFrom, to);
-    dragFrom = null;
-    dropIndex = null;
-  }
-  function onContainerDragLeave(ev: DragEvent) {
-    if (dragFrom === null) return;
-    // dragleave also fires when crossing between child pills; only drop the
-    // marker (and the drop target) when the pointer truly leaves the container.
-    const related = ev.relatedTarget as Node | null;
-    if (related && (ev.currentTarget as HTMLElement).contains(related)) return;
-    dropIndex = null;
-  }
-  function onDragEnd() {
-    dragFrom = null;
-    dropIndex = null;
   }
 
   async function save() {
@@ -329,98 +240,20 @@
     </div>
   </div>
 
-  <!-- Search: highlights matching tags in place (no filtering). -->
-  <div class="relative mt-1.5">
-    <input
-      bind:value={search}
-      placeholder="Search tags to highlight…"
-      class="w-full pl-2 pr-7 py-1 text-xs bg-ink-950 border border-ink-700 rounded focus:outline-none focus:border-accent-500"
-    />
-    {#if search}
-      <button
-        type="button"
-        onclick={() => (search = "")}
-        aria-label="Clear search"
-        class="absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded text-slate-400 hover:text-slate-100 flex items-center justify-center"
-      >×</button>
-    {/if}
-  </div>
-
   {#if loader.loading}
     <p class="text-slate-500 text-xs py-4 text-center">Loading…</p>
   {:else}
-    <!-- Scrollable, grows to fill the column. Drag a pill to reorder; click to
-         edit; empty-commit deletes; "+" adds. The container is the drop zone so
-         drops land in the gaps between pills too (ondragover/ondrop here);
-         leaving the container clears the insertion marker. -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      ondragover={onContainerDragOver}
-      ondrop={onContainerDrop}
-      ondragleave={onContainerDragLeave}
-      class="flex flex-wrap gap-1.5 content-start overflow-y-auto flex-1 min-h-0 pr-1"
-    >
-      {#each pills as p, i (p === PLACEHOLDER ? `__new__${i}` : p)}
-        {#if p === PLACEHOLDER}
-          <TagPill
-            text=""
-            startEditing
-            size="md"
-            autocomplete={autocompleteOn}
-            existingTags={tags}
-            onreplace={(next) => addTag(next)}
-            oncancel={() => { addingTag = false; }}
-          />
-        {:else}
-          <!-- Insertion marker: a vertical bar showing where the dragged tag
-               will drop (immediately before this pill). -->
-          {#if dragFrom !== null && dropIndex === i}
-            <span
-              class="w-0.5 self-stretch min-h-[1.5rem] bg-amber-400 rounded-full"
-              aria-hidden="true"
-            ></span>
-          {/if}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span
-            draggable="true"
-            ondragstart={(e) => onDragStart(i, e)}
-            ondragover={(e) => onDragOver(i, e)}
-            ondragend={onDragEnd}
-            onmousedown={(e) => { if (e.button === 1) e.preventDefault(); }}
-            onauxclick={(e) => { if (e.button === 1) { e.preventDefault(); toggleSelect(p); } }}
-            title="Middle-click to select"
-            class="inline-flex rounded-full cursor-grab active:cursor-grabbing transition-shadow
-              {selected.has(p) ? 'ring-2 ring-sky-400' : matchesQuery(p, search) ? 'ring-2 ring-amber-400' : ''}
-              {dragFrom === i ? 'opacity-40' : ''}"
-          >
-            <TagPill
-              text={p}
-              size="md"
-              autocomplete={autocompleteOn}
-              existingTags={tags}
-              onreplace={(next) => replaceTag(p, next)}
-              ondelete={() => deleteTag(p)}
-            />
-          </span>
-        {/if}
-      {/each}
-
-      <!-- End-of-list insertion marker (dropping past the last tag's midpoint). -->
-      {#if dragFrom !== null && dropIndex === tags.length}
-        <span
-          class="w-0.5 self-stretch min-h-[1.5rem] bg-amber-400 rounded-full"
-          aria-hidden="true"
-        ></span>
-      {/if}
-
-      <button
-        type="button"
-        onclick={() => (addingTag = true)}
-        title="Add tag"
-        aria-label="Add tag"
-        class="px-2 py-0.5 text-[11.25px] leading-none rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/10 transition-colors self-start"
-      >+</button>
-    </div>
+    <TagList
+      {tags}
+      onchange={(next) => (tags = next)}
+      size="md"
+      autocomplete={autocompleteOn}
+      reorderable
+      searchable
+      selectable
+      onselectionchange={onSelectionChange}
+      bind:clearSelection={clearTagSelection}
+    />
   {/if}
 
   {#if reviewResult}
