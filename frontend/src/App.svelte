@@ -13,6 +13,7 @@
   import CreateProjectModal from "$lib/components/CreateProjectModal.svelte";
   import DeleteProjectModal from "$lib/components/DeleteProjectModal.svelte";
   import ConfirmFrameOverwriteModal from "$lib/components/ConfirmFrameOverwriteModal.svelte";
+  import ToastHost from "$lib/components/ToastHost.svelte";
   import SourcesTab from "$lib/components/SourcesTab.svelte";
   import SettingsTab from "$lib/components/SettingsTab.svelte";
   import TrainingTab from "$lib/components/TrainingTab.svelte";
@@ -145,4 +146,5 @@
       oncancel={() => resolveFrameOverwrite(false)}
     />
   {/if}
+  <ToastHost />
 </div>
