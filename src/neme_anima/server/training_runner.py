@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import signal
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -43,6 +44,12 @@ logger = logging.getLogger(__name__)
 # Keep at most this many log lines in-memory for the UI. The on-disk run.log
 # captures everything; this buffer is just for fast reconnects.
 LOG_BUFFER_MAX = 2000
+
+# Guards the persisted-state file I/O. The pump tasks, the start/stop
+# handlers, and status() reads all share one event loop, but the
+# tmp-write-then-replace in _persist_state must stay atomic against any
+# future to_thread offload — and the lock documents the invariant.
+_STATE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -371,6 +378,7 @@ class TrainingManager:
                         pass
                 # Update progress fields opportunistically.
                 if self._state is not None:
+                    self._state.last_log_line = line
                     parsed = _parse_progress(line)
                     if parsed:
                         if "epoch" in parsed:
@@ -381,7 +389,6 @@ class TrainingManager:
                             self._state.loss = parsed["loss"]
                         if self._project is not None:
                             _persist_state(self._project, self._state)
-                    self._state.last_log_line = line
                 # Push the line to subscribers.
                 await self._broadcaster.publish(Event(
                     type="training.log",
@@ -511,20 +518,23 @@ def _state_to_dict(state: RunState) -> dict:
 
 
 def _persist_state(project: Project, state: RunState) -> None:
-    project.training_dir.mkdir(parents=True, exist_ok=True)
-    tmp = project.training_state_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(_state_to_dict(state), indent=2))
-    tmp.replace(project.training_state_path)
+    with _STATE_LOCK:
+        project.training_dir.mkdir(parents=True, exist_ok=True)
+        tmp = project.training_state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_state_to_dict(state), indent=2))
+        tmp.replace(project.training_state_path)
 
 
 def _load_persisted_state(project: Project) -> RunState | None:
     p = project.training_state_path
-    if not p.is_file():
-        return None
-    try:
-        raw = json.loads(p.read_text())
-    except (OSError, ValueError):
-        return None
+    with _STATE_LOCK:
+        if not p.is_file():
+            return None
+        try:
+            raw = json.loads(p.read_text())
+        except (OSError, ValueError) as exc:
+            logger.warning("training: corrupt persisted state at %s: %s", p, exc)
+            return None
     try:
         return RunState(
             project_slug=raw.get("project_slug") or project.slug,
@@ -543,5 +553,8 @@ def _load_persisted_state(project: Project) -> RunState | None:
             stop_requested=bool(raw.get("stop_requested", False)),
             total_epochs=raw.get("total_epochs"),
         )
-    except KeyError:
+    except KeyError as exc:
+        logger.warning(
+            "training: persisted state at %s is missing required key %s", p, exc,
+        )
         return None
