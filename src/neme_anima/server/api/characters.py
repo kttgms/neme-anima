@@ -12,12 +12,13 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from neme_anima.balancing import compute_character_balancing
 from neme_anima.core_tags import DEFAULT_BLACKLIST, compute_core_tags
-from neme_anima.storage.project import Project
+from neme_anima.server.api import deps
+from neme_anima.storage.project import Character, Project
 
 router = APIRouter(prefix="/api/projects", tags=["characters"])
 
@@ -46,19 +47,6 @@ class CoreTagsComputeBody(BaseModel):
     blacklist: list[str] | None = None
 
 
-def _load(request: Request, slug: str) -> Project:
-    entry = request.app.state.registry.get(slug)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
-    try:
-        return Project.load(Path(entry.folder))
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"project files missing for {slug!r} at {entry.folder}",
-        ) from e
-
-
 def _character_view(project: Project, character_slug: str) -> dict:
     c = project.character_by_slug(character_slug)
     if c is None:
@@ -80,16 +68,14 @@ def _character_view(project: Project, character_slug: str) -> dict:
 
 
 @router.get("/{slug}/characters")
-async def list_characters(request: Request, slug: str) -> list[dict]:
-    project = _load(request, slug)
+async def list_characters(project: Project = Depends(deps.get_project)) -> list[dict]:  # noqa: B008
     return [_character_view(project, c.slug) for c in project.characters]
 
 
 @router.post("/{slug}/characters", status_code=201)
 async def create_character(
-    request: Request, slug: str, body: CreateCharacterBody,
+    body: CreateCharacterBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
-    project = _load(request, slug)
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="name must not be empty")
@@ -99,12 +85,11 @@ async def create_character(
 
 @router.patch("/{slug}/characters/{character_slug}")
 async def update_character(
-    request: Request, slug: str, character_slug: str, body: PatchCharacterBody,
+    body: PatchCharacterBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    character: Character = Depends(deps.get_character),  # noqa: B008
 ) -> dict:
-    project = _load(request, slug)
-    c = project.character_by_slug(character_slug)
-    if c is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
+    c = character
     if body.name is not None:
         new_name = body.name.strip()
         if not new_name:
@@ -134,7 +119,9 @@ async def update_character(
 
 @router.post("/{slug}/characters/{character_slug}/core-tags/compute")
 async def compute_character_core_tags(
-    request: Request, slug: str, character_slug: str, body: CoreTagsComputeBody,
+    body: CoreTagsComputeBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    character: Character = Depends(deps.get_character),  # noqa: B008
 ) -> dict:
     """Run the core-tag analysis for a character and return the suggested list.
 
@@ -143,10 +130,7 @@ async def compute_character_core_tags(
     confirmed set. Threshold defaults to the character's persisted value
     so flipping the toggle alone is enough to refresh.
     """
-    project = _load(request, slug)
-    c = project.character_by_slug(character_slug)
-    if c is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
+    c = character
     threshold = (
         float(body.threshold) if body.threshold is not None
         else c.core_tags_freq_threshold
@@ -156,7 +140,7 @@ async def compute_character_core_tags(
         else DEFAULT_BLACKLIST
     )
     report = compute_core_tags(
-        project=project, character_slug=character_slug,
+        project=project, character_slug=character.slug,
         threshold=threshold, blacklist=blacklist,
     )
     return {
@@ -170,7 +154,7 @@ async def compute_character_core_tags(
 
 
 @router.get("/{slug}/balancing/preview")
-async def balancing_preview(request: Request, slug: str) -> dict:
+async def balancing_preview(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Return the per-character balancing table for the UI's preview view.
 
     The Training tab renders this so the user can sanity-check the
@@ -178,7 +162,6 @@ async def balancing_preview(request: Request, slug: str) -> dict:
     mirrors :class:`~neme_anima.balancing.CharacterBalanceRow` plus the
     project totals so the UI can render percentages.
     """
-    project = _load(request, slug)
     rows = compute_character_balancing(project=project)
     total_frames = sum(r.frame_count for r in rows)
     return {
@@ -199,13 +182,11 @@ async def balancing_preview(request: Request, slug: str) -> dict:
 
 @router.delete("/{slug}/characters/{character_slug}", status_code=204)
 async def delete_character(
-    request: Request, slug: str, character_slug: str,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    character: Character = Depends(deps.get_character),  # noqa: B008
 ) -> Response:
-    project = _load(request, slug)
-    if project.character_by_slug(character_slug) is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
     try:
-        project.remove_character(character_slug)
+        project.remove_character(character.slug)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return Response(status_code=204)
@@ -218,13 +199,16 @@ class CopyToBody(BaseModel):
 
 @router.post("/{slug}/characters/{character_slug}/copy-to")
 async def copy_to_project(
-    request: Request, slug: str, character_slug: str, body: CopyToBody,
+    character_slug: str,
+    body: CopyToBody,
+    request: Request,
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Copy this character (and all artifacts related to it) into another
     registered project. See ``character_copy.copy_character_to_project``."""
     from neme_anima.storage.character_copy import copy_character_to_project
 
-    src = _load(request, slug)
+    src = project
     dst_entry = request.app.state.registry.get(body.destination_slug)
     if dst_entry is None:
         raise HTTPException(
