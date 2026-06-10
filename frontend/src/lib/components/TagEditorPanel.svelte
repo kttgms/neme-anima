@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
+  import { createFlash } from "$lib/composables/flash.svelte";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
@@ -37,8 +38,7 @@
   let loading = $state(true);
   let saving = $state(false);
   let error = $state<string | null>(null);
-  let savedFlash = $state(false);
-  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  const savedFlash = createFlash();
 
   let addingTag = $state(false);
   let tagging = $state(false);
@@ -231,9 +231,7 @@
       tags = [...parsed];
       framesStore.markRetagged(filename);
       framesStore.setSidecarFlags(filename, { has_tags: parsed.length > 0 });
-      savedFlash = true;
-      if (flashTimer) clearTimeout(flashTimer);
-      flashTimer = setTimeout(() => { savedFlash = false; }, 2000);
+      savedFlash.trigger();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -314,7 +312,7 @@
     reviewResult = null;
   }
 
-  onDestroy(() => { if (flashTimer) clearTimeout(flashTimer); });
+  onDestroy(() => savedFlash.destroy());
 </script>
 
 <div class="flex flex-col gap-2 flex-1 min-h-0">
@@ -323,7 +321,7 @@
       Tags {#if tags.length}<span class="text-slate-600">({tags.length})</span>{/if}
     </h3>
     <div class="flex items-center gap-2">
-      {#if savedFlash}
+      {#if savedFlash.active}
         <span class="text-[10px] text-emerald-400">Saved ✓</span>
       {/if}
       {#if onclose}

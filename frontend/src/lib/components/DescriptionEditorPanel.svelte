@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
+  import { createFlash } from "$lib/composables/flash.svelte";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
 
@@ -27,8 +28,7 @@
   let saving = $state(false);
   let describing = $state(false);
   let error = $state<string | null>(null);
-  let savedFlash = $state(false);
-  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+  const savedFlash = createFlash();
 
   let dirty = $derived(text !== saved);
   $effect(() => { ondirty?.(dirty); });
@@ -70,9 +70,7 @@
       framesStore.setSidecarFlags(filename, {
         has_description: r.text.trim().length > 0,
       });
-      savedFlash = true;
-      if (flashTimer) clearTimeout(flashTimer);
-      flashTimer = setTimeout(() => { savedFlash = false; }, 2000);
+      savedFlash.trigger();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -115,7 +113,7 @@
     }
   }
 
-  onDestroy(() => { if (flashTimer) clearTimeout(flashTimer); });
+  onDestroy(() => savedFlash.destroy());
 </script>
 
 <div class="flex flex-col gap-2">
@@ -123,7 +121,7 @@
     <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-400">
       Description
     </h3>
-    {#if savedFlash}
+    {#if savedFlash.active}
       <span class="text-[10px] text-emerald-400">Saved ✓</span>
     {/if}
   </div>

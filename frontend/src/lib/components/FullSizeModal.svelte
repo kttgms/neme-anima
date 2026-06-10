@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
+  import { createFlash } from "$lib/composables/flash.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { toasts } from "$lib/stores/toasts.svelte";
   import TagEditorPanel from "./TagEditorPanel.svelte";
@@ -84,8 +85,7 @@
     { kind: "close" } | { kind: "nav"; target: number } | null
   >(null);
   // Transient "Crop saved ✓" toast — the modal now stays open after a crop.
-  let cropSavedFlash = $state(false);
-  let cropFlashTimer: ReturnType<typeof setTimeout> | null = null;
+  const cropSavedFlash = createFlash();
 
   let scale = $derived.by(() => {
     if (!natW || !natH || !viewportW || !viewportH) return 1;
@@ -336,9 +336,7 @@
       savedRect = { x: cropX, y: cropY, width: cropW, height: cropH };
       initialX = cropX; initialY = cropY; initialW = cropW; initialH = cropH;
       modified = false;
-      cropSavedFlash = true;
-      if (cropFlashTimer) clearTimeout(cropFlashTimer);
-      cropFlashTimer = setTimeout(() => { cropSavedFlash = false; }, 2000);
+      cropSavedFlash.trigger();
       oncropped();
     } catch (e) {
       console.error("crop failed", e);
@@ -348,7 +346,7 @@
     }
   }
 
-  onDestroy(() => { if (cropFlashTimer) clearTimeout(cropFlashTimer); });
+  onDestroy(() => cropSavedFlash.destroy());
 
   // Display-space helpers (used by the rect overlay).
   let rectDispX = $derived(cropX * scale);
@@ -464,7 +462,7 @@
         {/if}
 
         <!-- Crop-saved toast: shown briefly after a save; modal stays open. -->
-        {#if cropSavedFlash}
+        {#if cropSavedFlash.active}
           <div
             class="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-emerald-500 text-white text-xs font-medium shadow-lg pointer-events-none"
           >Crop saved ✓</div>
