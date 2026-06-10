@@ -342,15 +342,18 @@ async def delete_frame(filename: str, project: Project = Depends(deps.get_projec
 @router.post("/{slug}/frames/bulk-delete")
 async def bulk_delete(body: BulkDeleteBody, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     deleted = 0
+    skipped: list[dict] = []
     for filename in body.filenames:
         png, txt = _frame_paths(project, filename)
         if png.exists():
             png.unlink()
             deleted += 1
+        else:
+            skipped.append({"filename": filename, "reason": "not found on disk"})
         if txt.exists():
             txt.unlink()
         _cleanup_crop_artifacts(project, filename)
-    return {"deleted": deleted}
+    return {"deleted": deleted, "total": len(body.filenames), "skipped": skipped}
 
 
 @router.post("/{slug}/frames/bulk-tags-replace")
@@ -371,16 +374,18 @@ async def bulk_tags_replace(
     except re.error as e:
         raise HTTPException(status_code=422, detail=f"invalid regex: {e}") from e
     changed = 0
+    skipped: list[dict] = []
     for filename in body.filenames:
         _, txt = _frame_paths(project, filename)
         if not txt.exists():
+            skipped.append({"filename": filename, "reason": "no sidecar"})
             continue
         danbooru, _description = read_sidecar(txt)
         new_danbooru, n = regex.subn(body.replacement, danbooru)
         if n > 0 and new_danbooru != danbooru:
             update_sidecar(txt, tags=new_danbooru)
             changed += n
-    return {"changed": changed}
+    return {"changed": changed, "total": len(body.filenames), "skipped": skipped}
 
 
 @router.post("/{slug}/frames/bulk-retag-danbooru")
@@ -408,18 +413,23 @@ async def bulk_retag_danbooru(
         return True, eff
 
     retagged = 0
+    skipped: list[dict] = []
     effective_filenames: list[str | None] = []
     for filename in body.filenames:
         try:
             ok, eff = await asyncio.to_thread(_tag_one, filename)
-        except Exception:
-            ok, eff = False, None
+            err = None if ok else "frame not found on disk"
+        except Exception as exc:  # noqa: BLE001 — bulk never throws per-item
+            ok, eff, err = False, None, f"{type(exc).__name__}: {exc}"
         if ok:
             retagged += 1
+        else:
+            skipped.append({"filename": filename, "reason": err})
         effective_filenames.append(eff)
     return {
         "retagged": retagged,
         "total": len(body.filenames),
+        "skipped": skipped,
         # Parallel to body.filenames; an entry differs from the input when
         # a `_crop` derivative was tagged in place of the original. The
         # frontend uses this to flip badges on the row that actually got
@@ -468,18 +478,25 @@ async def bulk_retag_llm(body: BulkRetagBody, project: Project = Depends(deps.ge
 
     described = 0
     last_error: str | None = None
+    skipped: list[dict] = []
     effective_filenames: list[str | None] = []
     for filename in body.filenames:
         ok, err, eff = await asyncio.to_thread(_describe_one, filename)
         if ok:
             described += 1
-        elif err:
-            last_error = err
+        else:
+            if err:
+                last_error = err
+            skipped.append({
+                "filename": filename,
+                "reason": err or "frame not found on disk",
+            })
         effective_filenames.append(eff if ok else None)
     return {
         "described": described,
         "total": len(body.filenames),
         "error": last_error,
+        "skipped": skipped,
         # Parallel to body.filenames; entry is None when that filename
         # failed. When the crop took priority over the original, the entry
         # is the crop's filename so the frontend pops the right row.
@@ -1029,14 +1046,17 @@ async def bulk_move_to_character(
     deps.require_character(project, body.character_slug)
     moved = 0
     missing: list[str] = []
+    skipped: list[dict] = []
     for fn in body.filenames:
         rec = _find_record(project, fn)
         if rec is None:
             missing.append(fn)
+            skipped.append({"filename": fn, "reason": "frame metadata not found"})
             continue
         _append_moved_record(project, rec, body.character_slug)
         moved += 1
-    return {"moved": moved, "missing": missing}
+    return {"moved": moved, "missing": missing,
+            "total": len(body.filenames), "skipped": skipped}
 
 
 def _duplicate_for_character(
@@ -1052,7 +1072,7 @@ def _duplicate_for_character(
     """
     src_png, src_txt = _frame_paths(project, rec.filename)
     if not src_png.is_file():
-        raise HTTPException(status_code=404, detail=f"frame missing on disk: {rec.filename}")
+        raise FileNotFoundError(f"frame missing on disk: {rec.filename}")
 
     token = secrets.token_hex(4)
     base = f"{rec.filename}_dup_{token}"
@@ -1097,7 +1117,10 @@ async def duplicate_frame_for_character(
     rec = _find_record(project, filename)
     if rec is None:
         raise HTTPException(status_code=404, detail="frame metadata not found")
-    new_rec = _duplicate_for_character(project, rec, body.character_slug)
+    try:
+        new_rec = _duplicate_for_character(project, rec, body.character_slug)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return _record_to_dict(new_rec, project)
 
 
@@ -1110,11 +1133,19 @@ async def bulk_duplicate_for_character(
     deps.require_character(project, body.character_slug)
     duplicated: list[str] = []
     missing: list[str] = []
+    skipped: list[dict] = []
     for fn in body.filenames:
         rec = _find_record(project, fn)
         if rec is None:
             missing.append(fn)
+            skipped.append({"filename": fn, "reason": "frame metadata not found"})
             continue
-        new_rec = _duplicate_for_character(project, rec, body.character_slug)
+        try:
+            new_rec = _duplicate_for_character(project, rec, body.character_slug)
+        except FileNotFoundError as e:
+            missing.append(fn)
+            skipped.append({"filename": fn, "reason": str(e)})
+            continue
         duplicated.append(new_rec.filename)
-    return {"duplicated": duplicated, "missing": missing}
+    return {"duplicated": duplicated, "missing": missing,
+            "total": len(body.filenames), "skipped": skipped}
