@@ -7,12 +7,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from neme_anima.server.api import deps
 from neme_anima.server.paths import normalize_input_path
-from neme_anima.storage.project import Project, Segment
+from neme_anima.storage.project import Project, Segment, Source
 
 logger = logging.getLogger(__name__)
 
@@ -57,22 +58,11 @@ class CaptureFrameBody(BaseModel):
     character_slug: str | None = None
 
 
-def _load(request: Request, slug: str) -> Project:
-    entry = request.app.state.registry.get(slug)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
-    try:
-        return Project.load(Path(entry.folder))
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"project files missing for {slug!r} at {entry.folder}",
-        ) from e
-
-
 @router.post("/{slug}/sources")
-async def add_sources(request: Request, slug: str, body: AddSourcesBody) -> dict:
-    project = _load(request, slug)
+async def add_sources(
+    body: AddSourcesBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     added: list[str] = []
     skipped: list[str] = []
     for p in body.paths:
@@ -90,8 +80,10 @@ async def add_sources(request: Request, slug: str, body: AddSourcesBody) -> dict
 
 
 @router.post("/{slug}/sources/import-folder")
-async def import_folder(request: Request, slug: str, body: ImportFolderBody) -> dict:
-    project = _load(request, slug)
+async def import_folder(
+    body: ImportFolderBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     try:
         folder = normalize_input_path(body.folder)
     except ValueError as e:
@@ -107,8 +99,7 @@ async def import_folder(request: Request, slug: str, body: ImportFolderBody) -> 
 
 
 @router.post("/{slug}/sources/reimport")
-async def reimport(request: Request, slug: str) -> dict:
-    project = _load(request, slug)
+async def reimport(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     if not project.source_root:
         raise HTTPException(
             status_code=400,
@@ -129,36 +120,37 @@ async def reimport(request: Request, slug: str) -> dict:
 
 
 @router.delete("/{slug}/sources/{idx}", status_code=204)
-async def remove_source(request: Request, slug: str, idx: int) -> Response:
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
+async def remove_source(
+    idx: int,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    _source: Source = Depends(deps.get_source),  # noqa: B008
+) -> Response:
     project.remove_source(idx)
     return Response(status_code=204)
 
 
 @router.patch("/{slug}/sources/{idx}")
 async def patch_source(
-    request: Request,
-    slug: str,
     idx: int,
     body: PatchSourceBody,
     character_slug: str | None = None,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    if character_slug not in (None, "") and project.character_by_slug(character_slug) is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
+    cslug = deps.optional_character_slug(project, character_slug)
     if body.excluded_refs is not None:
         project.set_excluded_refs(
-            idx, body.excluded_refs, character_slug=character_slug or None,
+            idx, body.excluded_refs, character_slug=cslug,
         )
-    return {"excluded_refs": project.sources[idx].excluded_refs}
+    return {"excluded_refs": source.excluded_refs}
 
 
 @router.get("/{slug}/sources/{idx}/wipe-preview")
-async def wipe_preview(request: Request, slug: str, idx: int) -> dict:
+async def wipe_preview(
+    idx: int,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    _source: Source = Depends(deps.get_source),  # noqa: B008
+) -> dict:
     """Return what an Extract / Re-process on this source would wipe.
 
     The Sources tab calls this BEFORE firing extract or rerun and shows
@@ -179,10 +171,6 @@ async def wipe_preview(request: Request, slug: str, idx: int) -> dict:
         _preserve_set_from_refs_by_slug,
         _refs_by_character,
     )
-
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
 
     video_stem = project.video_stem(idx)
     refs_by_slug = _refs_by_character(project, idx)
@@ -245,10 +233,12 @@ async def wipe_preview(request: Request, slug: str, idx: int) -> dict:
 
 
 @router.post("/{slug}/sources/{idx}/extract", status_code=202)
-async def extract(request: Request, slug: str, idx: int) -> dict:
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
+async def extract(
+    idx: int,
+    request: Request,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    _source: Source = Depends(deps.get_source),  # noqa: B008
+) -> dict:
     job_id = await request.app.state.queue.submit({
         "kind": "extract",
         "project_folder": str(project.root.resolve()),
@@ -259,10 +249,12 @@ async def extract(request: Request, slug: str, idx: int) -> dict:
 
 
 @router.post("/{slug}/sources/{idx}/rerun", status_code=202)
-async def rerun(request: Request, slug: str, idx: int) -> dict:
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
+async def rerun(
+    idx: int,
+    request: Request,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    _source: Source = Depends(deps.get_source),  # noqa: B008
+) -> dict:
     video_stem = project.video_stem(idx)
     job_id = await request.app.state.queue.submit({
         "kind": "rerun",
@@ -275,17 +267,17 @@ async def rerun(request: Request, slug: str, idx: int) -> dict:
 
 
 @router.get("/{slug}/sources/{idx}/thumbnail")
-async def get_thumbnail(request: Request, slug: str, idx: int) -> FileResponse:
+async def get_thumbnail(
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
+) -> FileResponse:
     """Return a cached JPEG thumbnail for the source's video.
 
     The first request grabs one frame near 10 % of the video's duration via
     OpenCV, saves it under ``<project>/.thumbs/<stem>.jpg``, and serves it.
     Subsequent requests serve the cached file directly.
     """
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
 
@@ -547,7 +539,10 @@ _CONVERT_TASKS: set[asyncio.Task] = set()
 
 
 @router.get("/{slug}/sources/{idx}/duration")
-async def get_duration(request: Request, slug: str, idx: int) -> dict:
+async def get_duration(
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
+) -> dict:
     """Return ``{duration_seconds, fps, vcodec}`` for the source's video.
 
     ``vcodec`` lets the segment editor tell up-front whether the browser can
@@ -559,10 +554,6 @@ async def get_duration(request: Request, slug: str, idx: int) -> dict:
     500 for a transient ffmpeg issue when the user just wants to look at
     a video they already extracted from.
     """
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    source = project.sources[idx]
     if (
         source.duration_seconds is not None
         and source.fps is not None
@@ -588,7 +579,10 @@ async def get_duration(request: Request, slug: str, idx: int) -> dict:
 
 @router.post("/{slug}/sources/{idx}/capture-frame", status_code=201)
 async def capture_frame(
-    request: Request, slug: str, idx: int, body: CaptureFrameBody,
+    request: Request,
+    body: CaptureFrameBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
     """Grab the requested frame and register it as a kept frame.
 
@@ -613,23 +607,13 @@ async def capture_frame(
         ingest_kept_image,
     )
 
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    source = project.sources[idx]
     video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
 
-    if (
-        body.character_slug not in (None, "")
-        and project.character_by_slug(body.character_slug) is None
-    ):
-        raise HTTPException(
-            status_code=404, detail=f"unknown character: {body.character_slug}",
-        )
+    cslug = deps.optional_character_slug(project, body.character_slug)
     target_slug = (
-        body.character_slug if body.character_slug
+        cslug if cslug
         else (project.characters[0].slug if project.characters else "default")
     )
 
@@ -683,7 +667,8 @@ async def capture_frame(
 
 @router.get("/{slug}/sources/{idx}/stream")
 async def stream_source(
-    request: Request, slug: str, idx: int,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> FileResponse:
     """Serve the original video file with HTTP Range support.
 
@@ -695,10 +680,7 @@ async def stream_source(
     triggers :func:`convert_source` (POST /convert) to produce a
     web-playable copy and then serves it via :func:`get_preview`.
     """
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
     media_type = _VIDEO_MIME_BY_SUFFIX.get(
@@ -715,7 +697,9 @@ def _preview_cache_path(project: Project, video_path: Path, mode: str) -> Path:
 
 @router.post("/{slug}/sources/{idx}/convert")
 async def convert_source(
-    request: Request, slug: str, idx: int, mode: str = "h264",
+    mode: str = "h264",
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
     """Kick off (or no-op join) a playback conversion for the given mode.
 
@@ -726,10 +710,7 @@ async def convert_source(
     """
     if mode not in ("remux", "h264"):
         raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
 
@@ -757,7 +738,9 @@ async def convert_source(
 
 @router.get("/{slug}/sources/{idx}/convert/status")
 async def convert_status(
-    request: Request, slug: str, idx: int, mode: str = "h264",
+    mode: str = "h264",
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
     """Report conversion progress: {state, pct, mode, error}.
 
@@ -767,10 +750,7 @@ async def convert_status(
     """
     if mode not in ("remux", "h264"):
         raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     cache_path = _preview_cache_path(project, video_path, mode)
     if cache_path.exists() and cache_path.stat().st_size > 0:
         return {"state": "ready", "pct": 100.0, "mode": mode, "error": ""}
@@ -782,7 +762,9 @@ async def convert_status(
 
 @router.get("/{slug}/sources/{idx}/preview")
 async def get_preview(
-    request: Request, slug: str, idx: int, mode: str = "h264",
+    mode: str = "h264",
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> FileResponse:
     """Serve a previously-converted, web-playable MP4 for the given mode.
 
@@ -792,10 +774,7 @@ async def get_preview(
     """
     if mode not in ("remux", "h264"):
         raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     cache_path = _preview_cache_path(project, video_path, mode)
     if not (cache_path.exists() and cache_path.stat().st_size > 0):
         raise HTTPException(
@@ -806,7 +785,9 @@ async def get_preview(
 
 @router.delete("/{slug}/sources/{idx}/preview")
 async def delete_preview(
-    request: Request, slug: str, idx: int, mode: str | None = None,
+    mode: str | None = None,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
     """Delete cached converted preview file(s) for a source.
 
@@ -817,10 +798,7 @@ async def delete_preview(
     """
     if mode is not None and mode not in ("remux", "h264"):
         raise HTTPException(status_code=400, detail="mode must be 'remux' or 'h264'")
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    video_path = Path(project.sources[idx].path)
+    video_path = Path(source.path)
     modes = [mode] if mode else ["remux", "h264"]
     removed: list[str] = []
     for m in modes:
@@ -965,7 +943,9 @@ def _run_convert_job(
 
 @router.put("/{slug}/sources/{idx}/segments")
 async def put_segments(
-    request: Request, slug: str, idx: int, body: PutSegmentsBody,
+    body: PutSegmentsBody,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    source: Source = Depends(deps.get_source),  # noqa: B008
 ) -> dict:
     """Replace the source's segment list. Validates, sorts, merges, persists.
 
@@ -979,10 +959,6 @@ async def put_segments(
     Returns ``{segments: [...]}`` so the client can confirm exactly what
     landed without a follow-up GET.
     """
-    project = _load(request, slug)
-    if idx < 0 or idx >= len(project.sources):
-        raise HTTPException(status_code=404, detail="source index out of range")
-    source = project.sources[idx]
     video_path = Path(source.path)
     if not video_path.is_file():
         raise HTTPException(status_code=404, detail=f"video file missing: {video_path}")
