@@ -3,6 +3,7 @@
   import * as api from "$lib/api";
   import { colorForIndex } from "$lib/characterColors";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import { trainingStore } from "$lib/stores/training.svelte";
   import type { TrainingConfig, TrainingPathCheck, TrainingRun } from "$lib/types";
 
@@ -255,7 +256,7 @@
       const data = await api.listTrainingCheckpoints(slug, runName);
       const loras = data.checkpoints.filter((c) => c.epoch != null);
       if (loras.length === 0) {
-        window.alert("This run has no saved LoRA epoch to export yet.");
+        toasts.info("This run has no saved LoRA epoch to export yet.");
         return;
       }
       const latest = loras.reduce((a, b) => ((b.epoch ?? -1) > (a.epoch ?? -1) ? b : a));
@@ -266,7 +267,7 @@
       link.click();
       link.remove();
     } catch (e) {
-      window.alert("Export failed: " + (e instanceof Error ? e.message : String(e)));
+      toasts.error("Export failed: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       exportingRun = null;
     }
@@ -437,13 +438,13 @@
   async function doStart() {
     busy = true;
     try { await trainingStore.start(); }
-    catch (e) { alert(`Start failed: ${e}`); }
+    catch (e) { toasts.error(`Start failed: ${e}`); }
     finally { busy = false; }
   }
   async function doStop() {
     busy = true;
     try { await trainingStore.stop(); }
-    catch (e) { alert(`Stop failed: ${e}`); }
+    catch (e) { toasts.error(`Stop failed: ${e}`); }
     finally { busy = false; }
   }
   async function continueRun(runName?: string) {
@@ -453,7 +454,7 @@
       // Switch to the Run sub-tab so the user immediately sees what's happening.
       subtab = "run";
     } catch (e) {
-      alert(`Continue failed: ${e}`);
+      toasts.error(`Continue failed: ${e}`);
     } finally {
       busy = false;
     }

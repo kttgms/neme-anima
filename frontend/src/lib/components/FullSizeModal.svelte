@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import TagEditorPanel from "./TagEditorPanel.svelte";
   import DescriptionEditorPanel from "./DescriptionEditorPanel.svelte";
   import DiscardChangesDialog from "./DiscardChangesDialog.svelte";
@@ -341,7 +342,7 @@
       oncropped();
     } catch (e) {
       console.error("crop failed", e);
-      alert("Crop failed — see console for details.");
+      toasts.error("Crop failed — see console for details.");
     } finally {
       saving = false;
     }

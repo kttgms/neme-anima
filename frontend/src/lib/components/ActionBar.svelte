@@ -3,6 +3,7 @@
   import { colorForIndex } from "$lib/characterColors";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
 
@@ -81,7 +82,7 @@
       await refreshAfterAssignment(slug);
       framesStore.clear();
     } catch (e) {
-      alert(`Move failed: ${e}`);
+      toasts.error(`Move failed: ${e}`);
     } finally {
       menuBusy = false;
       charactersOpen = false;
@@ -103,13 +104,13 @@
       // under "All" or the target's filter.
       await refreshAfterAssignment(slug);
       if (res.missing.length > 0) {
-        alert(
+        toasts.info(
           `Also-assigned ${res.duplicated.length}; ` +
           `${res.missing.length} skipped (no metadata).`,
         );
       }
     } catch (e) {
-      alert(`Also-assign failed: ${e}`);
+      toasts.error(`Also-assign failed: ${e}`);
     } finally {
       menuBusy = false;
       charactersOpen = false;
@@ -183,6 +184,7 @@
     // deselected — a successful frame visibly drains out of the selection
     // pill while failures stay selected as a retry hint.
     framesStore.markProcessing(filenames);
+    let succeeded = 0;
     try {
       for (const filename of filenames) {
         try {
@@ -195,16 +197,24 @@
             // otherwise know to refetch.
             framesStore.markRetagged(filename);
             framesStore.deselect([filename]);
+            succeeded += 1;
           }
         } catch {
           // Swallow per-frame errors and let the failed frame stay selected
-          // as the retry hint — no popup, per the requested UX.
+          // as the retry hint — the summary toast below covers visibility.
         } finally {
           framesStore.unmarkProcessing(filename);
         }
       }
     } finally {
       retagBusy = false;
+      const failed = filenames.length - succeeded;
+      if (failed > 0) {
+        toasts.error(
+          `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
+          "failed to tag — they stay selected so you can retry.",
+        );
+      }
     }
   }
 
@@ -232,6 +242,7 @@
     // Process one frame at a time so the user gets per-frame feedback (badge
     // pop) as descriptions are written, and so each LLM call uses a fresh
     // chat-completions context (no carry-over between images).
+    let succeeded = 0;
     try {
       for (const filename of filenames) {
         try {
@@ -243,16 +254,24 @@
             const eff = res.effective_filenames?.[0] ?? filename;
             framesStore.markDescribed(eff);
             framesStore.deselect([filename]);
+            succeeded += 1;
           }
         } catch {
-          // Failed frames stay selected as the retry hint — no popup, same
-          // UX as retagDanbooru.
+          // Swallow per-frame errors and let the failed frame stay selected
+          // as the retry hint — the summary toast below covers visibility.
         } finally {
           framesStore.unmarkProcessing(filename);
         }
       }
     } finally {
       retagBusy = false;
+      const failed = filenames.length - succeeded;
+      if (failed > 0) {
+        toasts.error(
+          `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
+          "failed to describe — they stay selected so you can retry.",
+        );
+      }
     }
   }
 

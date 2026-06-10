@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
   import CharacterStrip from "./CharacterStrip.svelte";
   import VideoRow from "./VideoRow.svelte";
@@ -51,7 +52,7 @@
     if (!slug || files.length === 0) return;
     const images = files.filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name));
     if (images.length === 0) {
-      alert("No image files in the drop.");
+      toasts.info("No image files in the drop.");
       return;
     }
     uploading = true;

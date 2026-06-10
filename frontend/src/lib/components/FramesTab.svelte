@@ -3,6 +3,7 @@
   import * as api from "$lib/api";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
   import FrameThumb from "./FrameThumb.svelte";
   import FullSizeModal from "./FullSizeModal.svelte";
@@ -146,14 +147,14 @@
       // tag-only — otherwise it looks like LLM tagging is configured but
       // simply not running.
       if (resp.llm_error) {
-        alert(
+        toasts.error(
           `Image${images.length === 1 ? "" : "s"} uploaded and tagged, ` +
           `but the LLM description call failed:\n\n${resp.llm_error}`,
         );
       }
     } catch (e) {
       console.error("upload failed", e);
-      alert("Upload failed — see console for details.");
+      toasts.error("Upload failed — see console for details.");
     } finally {
       const ids = new Set(placeholders.map((p) => p.id));
       pendingDrops = pendingDrops.filter((p) => !ids.has(p.id));

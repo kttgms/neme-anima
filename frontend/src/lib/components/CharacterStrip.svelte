@@ -2,6 +2,7 @@
   import * as api from "$lib/api";
   import { colorForIndex } from "$lib/characterColors";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
   import CopyCharacterModal from "./CopyCharacterModal.svelte";
   import type { CharacterView } from "$lib/types";
@@ -47,7 +48,7 @@
       await projectsStore.load(slug);
       onselect(created.slug);
     } catch (e) {
-      alert(`Failed to create character: ${e}`);
+      toasts.error(`Failed to create character: ${e}`);
     } finally {
       creating = false;
     }
@@ -73,7 +74,7 @@
     } catch (e) {
       // Server returns 409 when this would be the last character.
       const msg = e instanceof Error ? e.message : String(e);
-      alert(msg.includes("409")
+      toasts.error(msg.includes("409")
         ? "Can't delete the last character — every project needs at least one."
         : `Failed to delete: ${msg}`);
     }
@@ -89,7 +90,7 @@
       await api.updateCharacter(projectSlug, slug, { name: nameDraft.trim() });
       await projectsStore.load(projectSlug);
     } catch (e) {
-      alert(`Rename failed: ${e}`);
+      toasts.error(`Rename failed: ${e}`);
     } finally {
       renaming = null;
       nameDraft = "";
