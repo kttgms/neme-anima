@@ -6,19 +6,16 @@
   import { reportDirty } from "$lib/composables/reportDirty.svelte";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
 
   type Props = {
     filename: string;
     /** Report unsaved-edit state up to the modal's discard guard. */
     ondirty?: (dirty: boolean) => void;
-    /** Overwrite confirmation, shared with the bulk image-selection flow. */
-    onconfirmFrameOverwrite?: (
-      action: "retag" | "describe",
-      selectedCount: number,
-      affectedCount: number,
-    ) => Promise<boolean>;
   };
-  const { filename, ondirty, onconfirmFrameOverwrite }: Props = $props();
+  const { filename, ondirty }: Props = $props();
+
+  const confirmFrameOverwrite = getFrameOverwriteConfirm();
 
   // Matches ActionBar: the Describe button only renders when the project has
   // an LLM model picked, so a user can't fire a doomed call.
@@ -82,8 +79,7 @@
     const affected = saved.trim().length > 0 ? 1 : 0;
     if (
       affected > 0 &&
-      onconfirmFrameOverwrite &&
-      !(await onconfirmFrameOverwrite("describe", 1, affected))
+      !(await confirmFrameOverwrite("describe", 1, affected))
     ) {
       return;
     }

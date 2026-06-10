@@ -6,17 +6,14 @@
   import { toasts } from "$lib/stores/toasts.svelte";
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
+  import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
 
-  type OverwriteAction = "retag" | "describe";
   type Props = {
     onopenRegex: () => void;
-    onconfirmFrameOverwrite: (
-      action: OverwriteAction,
-      selectedCount: number,
-      affectedCount: number,
-    ) => Promise<boolean>;
   };
-  const { onopenRegex, onconfirmFrameOverwrite }: Props = $props();
+  const { onopenRegex }: Props = $props();
+
+  const confirmFrameOverwrite = getFrameOverwriteConfirm();
 
   // Multi-character UI is only relevant when the project actually has more
   // than one character — single-character projects keep the pre-multi-
@@ -169,7 +166,7 @@
     const affectedCount = countExistingTags(filenames);
     if (
       affectedCount > 0 &&
-      !(await onconfirmFrameOverwrite("retag", filenames.length, affectedCount))
+      !(await confirmFrameOverwrite("retag", filenames.length, affectedCount))
     ) {
       return;
     }
@@ -226,7 +223,7 @@
     const affectedCount = countExistingDescriptions(filenames);
     if (
       affectedCount > 0 &&
-      !(await onconfirmFrameOverwrite("describe", filenames.length, affectedCount))
+      !(await confirmFrameOverwrite("describe", filenames.length, affectedCount))
     ) {
       return;
     }

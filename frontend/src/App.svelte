@@ -7,6 +7,7 @@
   import { framesStore } from "$lib/stores/frames.svelte";
   import { trainingStore } from "$lib/stores/training.svelte";
   import { connectEvents, type Connection } from "$lib/ws";
+  import { setFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
   import TopStrip from "$lib/components/TopStrip.svelte";
   import FramesTab from "$lib/components/FramesTab.svelte";
   import RegexModal from "$lib/components/RegexModal.svelte";
@@ -50,6 +51,8 @@
       frameOverwriteRequest = { action, selectedCount, affectedCount, resolve };
     });
   }
+
+  setFrameOverwriteConfirm(confirmFrameOverwrite);
 
   function resolveFrameOverwrite(confirmed: boolean) {
     const req = frameOverwriteRequest;
@@ -103,14 +106,13 @@
     onopenRegex={() => (regexOpen = true)}
     onopenCreate={() => (createOpen = true)}
     onopenDelete={() => (deleteProjectOpen = true)}
-    onconfirmFrameOverwrite={confirmFrameOverwrite}
   />
   <main class="px-4 pb-12">
     {#if projectsStore.active}
       {#if viewStore.tab === "sources"}
         <SourcesTab />
       {:else if viewStore.tab === "frames"}
-        <FramesTab onconfirmFrameOverwrite={confirmFrameOverwrite} />
+        <FramesTab />
       {:else if viewStore.tab === "training"}
         <TrainingTab />
       {:else if viewStore.tab === "settings"}

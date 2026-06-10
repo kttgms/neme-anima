@@ -12,17 +12,11 @@
     onopenRegex: () => void;
     onopenCreate: () => void;
     onopenDelete: () => void;
-    onconfirmFrameOverwrite: (
-      action: "retag" | "describe",
-      selectedCount: number,
-      affectedCount: number,
-    ) => Promise<boolean>;
   };
   const {
     onopenRegex,
     onopenCreate,
     onopenDelete,
-    onconfirmFrameOverwrite,
   }: Props = $props();
 
   // Character filter chips appear in the top bar (next to project pills)
@@ -83,7 +77,7 @@
     <!-- Right cluster: action bar + view tabs + density + queue pill.
          Allowed to wrap as a unit so they don't get truncated mid-control. -->
     <div class="flex flex-wrap items-center gap-x-3 gap-y-2 justify-end">
-      <ActionBar {onopenRegex} {onconfirmFrameOverwrite} />
+      <ActionBar {onopenRegex} />
       <ViewTabs />
       <DensitySlider />
       <QueuePill />

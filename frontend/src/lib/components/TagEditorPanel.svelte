@@ -9,6 +9,7 @@
   import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
   import { parseTags, splitSidecar } from "$lib/sidecar";
   import { matchesQuery, reorder, tagsEqual } from "$lib/tagList";
+  import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
   import TagPill from "./TagPill.svelte";
 
   type Props = {
@@ -17,14 +18,10 @@
     ondirty?: (dirty: boolean) => void;
     /** Close the whole modal (routed through the modal's discard guard). */
     onclose?: () => void;
-    /** Overwrite confirmation, shared with the bulk image-selection flow. */
-    onconfirmFrameOverwrite?: (
-      action: "retag" | "describe",
-      selectedCount: number,
-      affectedCount: number,
-    ) => Promise<boolean>;
   };
-  const { filename, ondirty, onclose, onconfirmFrameOverwrite }: Props = $props();
+  const { filename, ondirty, onclose }: Props = $props();
+
+  const confirmFrameOverwrite = getFrameOverwriteConfirm();
 
   let autocompleteOn = $derived(projectsStore.active?.tag_autocomplete ?? true);
   // Same gate the Describe button uses: the Review button only appears once a
@@ -245,8 +242,7 @@
     const affected = savedTags.length > 0 ? 1 : 0;
     if (
       affected > 0 &&
-      onconfirmFrameOverwrite &&
-      !(await onconfirmFrameOverwrite("retag", 1, affected))
+      !(await confirmFrameOverwrite("retag", 1, affected))
     ) {
       return;
     }
