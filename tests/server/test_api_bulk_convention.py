@@ -125,3 +125,87 @@ async def test_single_duplicate_of_diskless_frame_still_404s(
         json={"character_slug": target},
     )
     assert resp.status_code == 404
+
+
+async def test_bulk_retag_danbooru_skips_ghost_frame(
+    client, app, project_with_frames: Project,
+):
+    """A ghost filename (no PNG on disk) becomes a skip entry with reason
+    'frame not found on disk'; the real frame still gets retagged."""
+
+    class _FakeTagger:
+        def tag(self, arr):  # noqa: ANN001, ARG002
+            class _R:
+                text = "retagged"
+
+            return _R()
+
+    app.state._tagger = _FakeTagger()
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/bulk-retag-danbooru",
+        json={"filenames": [FRAME1, "ghost"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["retagged"] == 1
+    assert body["total"] == 2
+    assert body["skipped"] == [{"filename": "ghost", "reason": "frame not found on disk"}]
+    # effective_filenames is parallel to input; ghost resolves to None.
+    assert len(body["effective_filenames"]) == 2
+    assert body["effective_filenames"][0] == FRAME1
+    assert body["effective_filenames"][1] is None
+
+
+async def test_bulk_retag_danbooru_skips_on_tagger_exception(
+    client, app, project_with_frames: Project,
+):
+    """When the WD14 tagger raises for a frame the batch must not abort:
+    the frame is added to skipped with the exception class + message as
+    the reason string, and the loop continues to the next frame."""
+
+    class _ExplodingTagger:
+        def tag(self, arr):  # noqa: ANN001, ARG002
+            raise RuntimeError("boom")
+
+    app.state._tagger = _ExplodingTagger()
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/bulk-retag-danbooru",
+        json={"filenames": [FRAME1]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["retagged"] == 0
+    assert body["total"] == 1
+    assert body["skipped"] == [{"filename": FRAME1, "reason": "RuntimeError: boom"}]
+
+
+async def test_bulk_retag_llm_skips_ghost_frame(
+    client, project_with_frames: Project, monkeypatch,
+):
+    """A ghost filename on the LLM retag path becomes a skip entry with
+    reason 'frame not found on disk'; an existing real frame is still described."""
+    project_with_frames.llm.enabled = True
+    project_with_frames.llm.model = "fake-model"
+    project_with_frames.llm.endpoint = "http://localhost:1234"
+    project_with_frames.save()
+
+    def fake_describe_image(
+        *, endpoint, model, image_path, prompt, danbooru_tags, api_key=None,
+    ):
+        return "A described frame."
+
+    monkeypatch.setattr("neme_anima.llm.describe_image", fake_describe_image)
+
+    resp = await client.post(
+        f"/api/projects/{project_with_frames.slug}/frames/bulk-retag-llm",
+        json={"filenames": [FRAME1, "ghost"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["described"] == 1
+    assert body["total"] == 2
+    assert body["skipped"] == [{"filename": "ghost", "reason": "frame not found on disk"}]
+    assert body["effective_filenames"][0] == FRAME1
+    assert body["effective_filenames"][1] is None
