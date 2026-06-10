@@ -28,11 +28,11 @@ def _load(request: Request, slug: str) -> Project:
         raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
     try:
         return Project.load(Path(entry.folder))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=f"project files missing for {slug!r} at {entry.folder}",
-        )
+        ) from e
 
 
 def _resolve_character_slug(project: Project, raw: str | None) -> str | None:
@@ -113,8 +113,8 @@ async def get_ref_image(request: Request, slug: str, name: str) -> FileResponse:
     # Defense in depth — ensure ``name`` didn't escape the refs/ folder.
     try:
         target.relative_to(refs_root)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid ref name")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid ref name") from e
     if not target.is_file():
         raise HTTPException(status_code=404, detail="ref not found")
     return FileResponse(target)

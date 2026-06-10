@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from neme_anima.storage.project import Project
-
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -51,7 +50,7 @@ class ProjectRegistry:
         return conn
 
     def register(self, project: Project) -> RegistryEntry:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO projects (slug, name, folder, created_at, last_opened_at) "
@@ -92,5 +91,5 @@ class ProjectRegistry:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE projects SET last_opened_at = ? WHERE slug = ?",
-                (datetime.now(timezone.utc).isoformat(), slug),
+                (datetime.now(UTC).isoformat(), slug),
             )

@@ -12,7 +12,6 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-
 DEFAULT_CHARACTER_SLUG = "default"
 
 

@@ -63,11 +63,11 @@ def _load(request: Request, slug: str) -> Project:
         raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
     try:
         return Project.load(Path(entry.folder))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=f"project files missing for {slug!r} at {entry.folder}",
-        )
+        ) from e
 
 
 @router.post("/{slug}/sources")
@@ -95,7 +95,7 @@ async def import_folder(request: Request, slug: str, body: ImportFolderBody) -> 
     try:
         folder = normalize_input_path(body.folder)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not folder.is_dir():
         raise HTTPException(status_code=400, detail=f"not a directory: {folder}")
     added, skipped = project.import_videos_from_folder(folder)
@@ -301,7 +301,7 @@ async def get_thumbnail(request: Request, slug: str, idx: int) -> FileResponse:
             raise HTTPException(
                 status_code=500,
                 detail=f"thumbnail extraction failed: {type(e).__name__}: {e}",
-            )
+            ) from e
     return FileResponse(cache_path, media_type="image/jpeg")
 
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 VIDEO_EXTENSIONS = frozenset({
@@ -315,12 +315,12 @@ class Project:
     # ---------------- factory methods ----------------
 
     @classmethod
-    def create(cls, root: Path, *, name: str) -> "Project":
+    def create(cls, root: Path, *, name: str) -> Project:
         root = Path(root)
         if root.exists():
             raise FileExistsError(f"refusing to overwrite existing folder {root}")
         slug = root.name
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         project = cls(
             name=name,
             slug=slug,
@@ -337,7 +337,7 @@ class Project:
         return project
 
     @classmethod
-    def load(cls, root: Path) -> "Project":
+    def load(cls, root: Path) -> Project:
         root = Path(root)
         with open(root / "project.json") as f:
             data = json.load(f)
@@ -580,7 +580,7 @@ class Project:
             raise ValueError(f"video already in project: {video_path}")
         s = Source(
             path=str(video_path),
-            added_at=datetime.now(timezone.utc).isoformat(),
+            added_at=datetime.now(UTC).isoformat(),
         )
         self.sources.append(s)
         self.save()
@@ -614,7 +614,7 @@ class Project:
         dest.write_bytes(data)
         r = RefImage(
             path=str(dest.resolve()),
-            added_at=datetime.now(timezone.utc).isoformat(),
+            added_at=datetime.now(UTC).isoformat(),
         )
         character.refs.append(r)
         self.save()

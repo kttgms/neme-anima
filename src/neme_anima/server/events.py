@@ -33,7 +33,7 @@ class Event:
         return json.dumps(asdict(self))
 
     @classmethod
-    def from_json(cls, s: str) -> "Event":
+    def from_json(cls, s: str) -> Event:
         d = json.loads(s)
         return cls(type=d["type"], payload=d.get("payload", {}))
 

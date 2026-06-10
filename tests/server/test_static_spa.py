@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 
 from neme_anima.server.app import create_app

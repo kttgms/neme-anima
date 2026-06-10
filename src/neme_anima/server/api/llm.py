@@ -32,5 +32,5 @@ async def discover_models_endpoint(body: DiscoverBody) -> dict:
             discover_models, body.endpoint.strip(), body.api_key,
         )
     except LLMUnavailable as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"models": models}

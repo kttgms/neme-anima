@@ -122,7 +122,7 @@ async def test_broadcasts_queue_update_on_change():
             if ev.type == "queue.update":
                 saw_update = True
                 break
-        except asyncio.TimeoutError:
+        except TimeoutError:
             break
     await q.wait_idle()
     await q.stop()
@@ -141,7 +141,7 @@ async def test_has_other_pending_for_folder_reports_correctly():
 
     q = JobQueue(runner=runner, broadcaster=Broadcaster())
     a = await q.submit({"project_folder": "/p/alpha", "kind": "extract"})
-    b = await q.submit({"project_folder": "/p/alpha", "kind": "extract"})
+    await q.submit({"project_folder": "/p/alpha", "kind": "extract"})
     c = await q.submit({"project_folder": "/p/beta",  "kind": "extract"})
 
     # With job `a` running, two other pending jobs exist; only one is for

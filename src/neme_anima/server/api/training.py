@@ -94,11 +94,11 @@ def _load_or_404(request: Request, slug: str) -> Project:
         raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
     try:
         return Project.load(Path(entry.folder))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=f"project files missing for {slug!r} at {entry.folder}",
-        )
+        ) from e
 
 
 def _config_with_path_checks(cfg: TrainingConfig) -> dict:
@@ -199,12 +199,12 @@ async def get_log(
             "lines": [{"line": ln, "stream": "disk", "t": 0} for ln in lines],
         }
     except OSError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/{slug}/training/start", status_code=202)
 async def start_training(
-    request: Request, slug: str, body: StartBody = StartBody(),
+    request: Request, slug: str, body: StartBody = StartBody(),  # noqa: B008
 ) -> dict:
     project = _load_or_404(request, slug)
     try:
@@ -214,7 +214,7 @@ async def start_training(
             run_dir_name=body.run_dir_name,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{slug}/training/stop", status_code=202)
@@ -223,12 +223,12 @@ async def stop_training(request: Request, slug: str) -> dict:
     try:
         return await request.app.state.training.stop(project)
     except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{slug}/training/resume", status_code=202)
 async def resume_training(
-    request: Request, slug: str, body: StartBody = StartBody(),
+    request: Request, slug: str, body: StartBody = StartBody(),  # noqa: B008
 ) -> dict:
     """Continue a prior run from its last saved DeepSpeed state.
 
@@ -293,7 +293,7 @@ async def resume_training(
             run_dir_name=run_name,
         )
     except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 # ----- runs + checkpoints ---------------------------------------------------
@@ -345,8 +345,8 @@ async def delete_checkpoint(
     # Belt-and-braces: the resolved target must live under run_dir.
     try:
         target.resolve().relative_to(run_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid checkpoint name")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid checkpoint name") from e
     if not target.is_dir():
         raise HTTPException(
             status_code=404,
@@ -384,8 +384,8 @@ async def export_checkpoint(
     ckpt_dir = parent / ckpt_name
     try:
         ckpt_dir.resolve().relative_to(run_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid checkpoint name")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid checkpoint name") from e
     if not ckpt_dir.is_dir():
         raise HTTPException(
             status_code=404,
@@ -433,8 +433,8 @@ async def delete_run(
         raise HTTPException(status_code=404, detail=f"unknown run: {run_name}")
     try:
         run_dir.resolve().relative_to(project.training_runs_dir.resolve())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid run name")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid run name") from e
     training_lib._rmtree(run_dir)
     return Response(status_code=204)
 

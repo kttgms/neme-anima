@@ -67,9 +67,11 @@ async def test_no_prior_outputs_returns_zero_total(
     total=0 so the UI skips the modal entirely. Empty maps, empty lists
     everywhere; the only confusing thing would be if active_slugs were
     empty, which means the user has no refs at all."""
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
 
     body = (await client.get(f"/api/projects/{project.slug}/sources/0/wipe-preview")).json()
@@ -85,10 +87,12 @@ async def test_preview_separates_active_and_inactive_characters(
     counted as 'will wipe'; frames for the inactive character are
     counted as 'will preserve'. This is what the UX promise rests on.
     """
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
     # Only the default character gets a ref → only that character is active.
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
 
     # 3 frames belong to default (active → wipe), 2 to mio (inactive → preserve).
@@ -113,9 +117,11 @@ async def test_preview_counts_rejected_samples_as_wiped(
     diagnostic, not curation. The preview surfaces them under
     rejected_samples so the modal can render them as a separate row,
     visually distinct from per-character data the user might care about."""
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
     _seed(project, filename="ep01__r1",
           character_slug=DEFAULT_CHARACTER_SLUG, kept=False)
@@ -136,9 +142,11 @@ async def test_preview_counts_untracked_files_as_preserved(
     legacy file) is preserved because we have no way to attribute it.
     The preview surfaces it under '__untracked__' so the modal can show
     the user how many unattributed files exist."""
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
     Image.new("RGB", (8, 8), (5, 5, 5)).save(
         project.kept_dir / "ep01__manual_a.png",
@@ -158,11 +166,14 @@ async def test_preview_only_counts_files_for_this_video_stem(
     """The wipe runs are per-video; another source's frames must NOT
     appear in this preview. Otherwise the modal would scare the user
     with counts they're not even affecting."""
-    vid_a = tmp_path / "ep01.mkv"; vid_a.write_bytes(b"")
-    vid_b = tmp_path / "ep02.mkv"; vid_b.write_bytes(b"")
+    vid_a = tmp_path / "ep01.mkv"
+    vid_a.write_bytes(b"")
+    vid_b = tmp_path / "ep02.mkv"
+    vid_b.write_bytes(b"")
     project.add_source(vid_a)
     project.add_source(vid_b)
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
     # Seed frames for both stems; preview for ep01 should only see ep01.
     _seed(project, filename="ep01__a", character_slug=DEFAULT_CHARACTER_SLUG)
@@ -192,9 +203,11 @@ async def test_preview_only_counts_files_actually_on_disk(
     files actually on disk. Counting metadata-only rows scares the user
     with phantom 'will replace 202 frames' totals when only 20 of those
     files still exist."""
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
-    img = tmp_path / "ref.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     project.add_ref(img)
     # 2 default frames on disk (will-wipe), 1 mio frame on disk (preserve).
     _seed(project, filename="ep01__yui_a", character_slug=DEFAULT_CHARACTER_SLUG)

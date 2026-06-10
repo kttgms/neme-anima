@@ -167,7 +167,8 @@ async def test_patch_excluded_refs_with_character_slug(
     await client.post(
         f"/api/projects/{project.slug}/characters", json={"name": "Mio"},
     )
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     img = _png(tmp_path / "mio_ref.png")
     await client.post(
         f"/api/projects/{project.slug}/refs?character_slug=mio",

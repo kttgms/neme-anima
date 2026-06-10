@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from neme_anima.server.events import Broadcaster, Event
 
 

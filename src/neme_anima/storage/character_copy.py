@@ -24,7 +24,8 @@ from pathlib import Path
 
 from neme_anima.storage.metadata import FrameRecord, MetadataLog
 from neme_anima.storage.project import (
-    CROP_SUFFIX, Character, Project,
+    CROP_SUFFIX,
+    Project,
 )
 
 
@@ -118,7 +119,7 @@ def copy_character_to_project(
             report.sources_skipped.append(str(src_path))
             continue
         if not dry_run:
-            new_src = dst.add_source(src_path)
+            dst.add_source(src_path)
             # Carry over the source's per-character excluded_refs for this
             # character only.
             excluded = src_source.excluded_refs.get(src_character_slug, [])

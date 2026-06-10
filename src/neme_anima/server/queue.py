@@ -13,7 +13,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from neme_anima.server.events import Broadcaster, Event
@@ -21,7 +21,7 @@ from neme_anima.server.events import Broadcaster, Event
 logger = logging.getLogger(__name__)
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     DONE = "done"
@@ -78,7 +78,7 @@ class JobQueue:
         # short grace period so server shutdown can never hang here.
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
             try:
                 await task

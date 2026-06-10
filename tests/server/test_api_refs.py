@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 
 from neme_anima.server.app import create_app
 from neme_anima.storage.project import Project
@@ -101,7 +101,8 @@ async def test_get_ref_image_404_for_unknown(client, project: Project):
 async def test_remove_ref_strips_from_excluded(client, project: Project, tmp_path: Path):
     a = _png(tmp_path / "a.png")
     b = _png(tmp_path / "b.png")
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/refs", json={"paths": [str(a), str(b)]})
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     # Refs are now stored as copies inside the project — fetch their stored paths.

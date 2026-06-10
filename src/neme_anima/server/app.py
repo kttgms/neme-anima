@@ -38,8 +38,8 @@ def default_state_dir() -> Path:
 
 
 def _make_pipeline_runner(
-    active_progresses: dict[str, "BroadcasterProgress"],  # noqa: F821
-    queue_holder: dict[str, "JobQueue"] | None = None,
+    active_progresses: dict[str, BroadcasterProgress],  # noqa: F821
+    queue_holder: dict[str, JobQueue] | None = None,
 ):
     """Build a JobQueue runner that knows about the per-job progress registry.
 
@@ -149,8 +149,8 @@ def create_app(*, state_dir: Path | None = None) -> FastAPI:
 
     registry = ProjectRegistry(state_dir / "db.sqlite")
     broadcaster = Broadcaster()
-    active_progresses: dict[str, "BroadcasterProgress"] = {}  # noqa: F821
-    queue_holder: dict[str, "JobQueue"] = {}
+    active_progresses: dict[str, BroadcasterProgress] = {}  # noqa: F821
+    queue_holder: dict[str, JobQueue] = {}
     queue = JobQueue(
         runner=_make_pipeline_runner(active_progresses, queue_holder),
         broadcaster=broadcaster,
@@ -189,7 +189,14 @@ def create_app(*, state_dir: Path | None = None) -> FastAPI:
 
     # Routers added later (Tasks 6-10) — currently stubs.
     from neme_anima.server.api import (
-        characters, frames, llm, projects, refs, sources, tags, training,
+        characters,
+        frames,
+        llm,
+        projects,
+        refs,
+        sources,
+        tags,
+        training,
     )
     from neme_anima.server.api import queue as queue_routes
     from neme_anima.server.api import ws as ws_routes

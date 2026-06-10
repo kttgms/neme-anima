@@ -24,13 +24,13 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import signal
-import subprocess
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +89,6 @@ _PROGRESS_PATTERNS = [
     ("loss",  r"\bloss[\s:=]+([0-9]*\.?[0-9]+)"),
 ]
 
-import re
 _PROG_RE = [(name, re.compile(pat, re.IGNORECASE)) for name, pat in _PROGRESS_PATTERNS]
 
 
@@ -135,7 +134,9 @@ class TrainingManager:
     def status(self, project: Project) -> dict:
         """Snapshot for the API/UI. ``running`` is True iff this project owns
         the active subprocess; otherwise we report the last persisted state."""
-        is_ours = self._is_active() and self._project is not None and self._project.slug == project.slug
+        is_ours = (
+            self._is_active() and self._project is not None and self._project.slug == project.slug
+        )
         if is_ours and self._state is not None:
             persisted = self._state
         else:
@@ -226,7 +227,7 @@ class TrainingManager:
             self._log_path = run_dir / "run.log"
             self._log_file = open(self._log_path, "a", encoding="utf-8", buffering=1)
             self._log_file.write(
-                f"\n=== run start {datetime.now(timezone.utc).isoformat()} "
+                f"\n=== run start {datetime.now(UTC).isoformat()} "
                 f"argv={shlex.join(argv)} cwd={cwd}\n",
             )
 
@@ -234,7 +235,7 @@ class TrainingManager:
                 project_slug=project.slug,
                 run_dir=str(run_dir.resolve()),
                 status="starting",
-                started_at=datetime.now(timezone.utc).isoformat(),
+                started_at=datetime.now(UTC).isoformat(),
                 resumed_from=resume_from_checkpoint,
                 total_epochs=project.training.epochs,
             )
@@ -252,7 +253,7 @@ class TrainingManager:
             except FileNotFoundError as e:
                 self._state.status = "failed"
                 self._state.error = f"launcher not found: {e}"
-                self._state.finished_at = datetime.now(timezone.utc).isoformat()
+                self._state.finished_at = datetime.now(UTC).isoformat()
                 _persist_state(project, self._state)
                 self._close_log_file()
                 self._project = None
@@ -302,7 +303,7 @@ class TrainingManager:
         if self._proc:
             try:
                 await asyncio.wait_for(self._proc.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Force-kill if it didn't go down cleanly.
                 try:
                     pgid = os.getpgid(self._proc.pid)
@@ -331,7 +332,7 @@ class TrainingManager:
                 pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, signal.SIGKILL)
@@ -410,14 +411,14 @@ class TrainingManager:
                 if t is not asyncio.current_task() and not t.done():
                     try:
                         await asyncio.wait_for(t, timeout=2.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                    except (TimeoutError, asyncio.CancelledError):
                         pass
 
         state = self._state
         project = self._project
         if state is not None:
             state.exit_code = rc
-            state.finished_at = datetime.now(timezone.utc).isoformat()
+            state.finished_at = datetime.now(UTC).isoformat()
             if state.stop_requested:
                 state.status = "stopped"
             elif rc == 0:

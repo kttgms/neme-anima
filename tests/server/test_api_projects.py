@@ -74,7 +74,8 @@ async def test_source_view_includes_extraction_cache_state(
     no detection cache must report 'none' so the UI keeps Re-process
     disabled and Extract primary."""
     project = Project.create(tmp_path / "p", name="p")
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
     await client.post(
         "/api/projects/register", json={"folder": str(tmp_path / "p")},
@@ -94,7 +95,8 @@ async def test_source_view_reports_current_after_stamp(
     from neme_anima.extraction_cache import stamp_meta
 
     project = Project.create(tmp_path / "p", name="p")
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
     # Simulate a completed extract by writing a stub parquet + the meta.
     cache_dir = project.cache_dir_for("ep01")
@@ -120,7 +122,8 @@ async def test_source_view_reports_stale_after_threshold_drift(
     from neme_anima.extraction_cache import stamp_meta
 
     project = Project.create(tmp_path / "p", name="p")
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     project.add_source(vid)
     cache_dir = project.cache_dir_for("ep01")
     cache_dir.mkdir(parents=True, exist_ok=True)

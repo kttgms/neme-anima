@@ -10,8 +10,6 @@ import re
 import secrets
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -20,6 +18,8 @@ from neme_anima.storage.metadata import FrameRecord, MetadataLog
 from neme_anima.storage.project import CROP_SUFFIX, Project
 from neme_anima.tag import join_sidecar, split_sidecar
 from neme_anima.tag_vocabulary import tag_vocabulary_path
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["frames"])
 
@@ -69,11 +69,11 @@ def _load(request: Request, slug: str) -> Project:
         raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
     try:
         return Project.load(Path(entry.folder))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=f"project files missing for {slug!r} at {entry.folder}",
-        )
+        ) from e
 
 
 def _frame_paths(project: Project, filename: str) -> tuple[Path, Path]:
@@ -151,7 +151,9 @@ async def list_frames(
     items = []
     total_in_view = 0
     for rec in by_filename.values():
-        on_disk = kept_dir / f"{rec.filename}.png" if rec.kept else rejected_dir / f"{rec.filename}.png"
+        on_disk = (
+            kept_dir / f"{rec.filename}.png" if rec.kept else rejected_dir / f"{rec.filename}.png"
+        )
         if not on_disk.is_file():
             continue
         # Character-slug filter is applied here (after the on-disk check) so
@@ -379,7 +381,8 @@ async def bulk_delete(request: Request, slug: str, body: BulkDeleteBody) -> dict
     for filename in body.filenames:
         png, txt = _frame_paths(project, filename)
         if png.exists():
-            png.unlink(); deleted += 1
+            png.unlink()
+            deleted += 1
         if txt.exists():
             txt.unlink()
         _cleanup_crop_artifacts(project, filename)
@@ -402,7 +405,7 @@ async def bulk_tags_replace(
     try:
         regex = re.compile(body.pattern, flags)
     except re.error as e:
-        raise HTTPException(status_code=422, detail=f"invalid regex: {e}")
+        raise HTTPException(status_code=422, detail=f"invalid regex: {e}") from e
     project = _load(request, slug)
     changed = 0
     for filename in body.filenames:
@@ -727,7 +730,7 @@ async def get_crop_rect(request: Request, slug: str, filename: str) -> dict:
     try:
         data = json.loads(spec.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"corrupt crop spec: {exc}")
+        raise HTTPException(status_code=500, detail=f"corrupt crop spec: {exc}") from exc
     # Only echo the four fields the client cares about; ignores anything
     # extra we may add later for forwards compat.
     return {

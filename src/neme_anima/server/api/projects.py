@@ -180,7 +180,7 @@ async def create_project(request: Request, body: CreateProjectBody) -> dict:
     try:
         project = Project.create(target, name=body.name)
     except FileExistsError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     request.app.state.registry.register(project)
     return _project_view(project)
 
@@ -191,7 +191,7 @@ async def register_existing(request: Request, body: RegisterBody) -> dict:
     try:
         project = Project.load(folder)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     request.app.state.registry.register(project)
     return _project_view(project)
 
@@ -202,12 +202,12 @@ def _load_or_404(request: Request, slug: str) -> Project:
         raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
     try:
         return Project.load(Path(entry.folder))
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         raise HTTPException(
             status_code=404,
             detail=f"project files missing for {slug!r} at {entry.folder} — "
                    "folder was moved or deleted; remove the registry entry or restore the files",
-        )
+        ) from e
 
 
 @router.get("/{slug}")
@@ -251,7 +251,7 @@ async def patch_project(request: Request, slug: str, body: PatchProjectBody) -> 
 
 @router.delete("/{slug}", status_code=204)
 async def delete_project(
-    request: Request, slug: str, body: DeleteProjectBody = DeleteProjectBody(),
+    request: Request, slug: str, body: DeleteProjectBody = DeleteProjectBody(),  # noqa: B008
 ) -> Response:
     entry = request.app.state.registry.get(slug)
     if entry is None:

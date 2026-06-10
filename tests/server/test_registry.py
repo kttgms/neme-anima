@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from neme_anima.server.registry import ProjectRegistry, RegistryEntry
+from neme_anima.server.registry import ProjectRegistry
 from neme_anima.storage.project import Project
 
 
@@ -66,8 +66,10 @@ def test_touch_updates_last_opened(registry: ProjectRegistry, tmp_path: Path):
 
 
 def test_list_orders_by_last_opened_desc(registry: ProjectRegistry, tmp_path: Path):
-    a = Project.create(tmp_path / "a", name="a"); registry.register(a)
-    b = Project.create(tmp_path / "b", name="b"); registry.register(b)
+    a = Project.create(tmp_path / "a", name="a")
+    registry.register(a)
+    b = Project.create(tmp_path / "b", name="b")
+    registry.register(b)
     registry.touch("a")  # a most recent
     rows = registry.list()
     assert [r.slug for r in rows] == ["a", "b"]

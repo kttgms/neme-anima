@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from neme_anima.server.api.sources import _convert_cmd
 from neme_anima.server.app import create_app
 from neme_anima.storage.project import Project
 
@@ -64,8 +66,10 @@ async def test_remove_source(client, project: Project, tmp_path: Path):
 
 
 async def test_patch_excluded_refs(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
-    img = tmp_path / "ref.png"; img.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"")
     project.add_ref(img)
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     resp = await client.patch(
@@ -133,7 +137,8 @@ async def test_import_folder_rejects_missing_dir(client, project: Project, tmp_p
 
 
 async def test_reimport_brings_back_deleted_rows(client, project: Project, tmp_path: Path):
-    folder = tmp_path / "vids"; folder.mkdir()
+    folder = tmp_path / "vids"
+    folder.mkdir()
     (folder / "ep01.mkv").write_bytes(b"")
     (folder / "ep02.mkv").write_bytes(b"")
     await client.post(
@@ -183,7 +188,8 @@ async def test_thumbnail_extracts_from_real_video(
 
 
 async def test_thumbnail_serves_cached_jpeg(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     # Pre-populate the thumbnail cache so we don't have to actually decode video.
     thumbs_dir = project.root / ".thumbs"
@@ -196,7 +202,8 @@ async def test_thumbnail_serves_cached_jpeg(client, project: Project, tmp_path: 
 
 
 async def test_thumbnail_404_when_video_missing(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "gone.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "gone.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     vid.unlink()
     resp = await client.get(f"/api/projects/{project.slug}/sources/0/thumbnail")
@@ -209,8 +216,10 @@ async def test_thumbnail_404_when_idx_out_of_range(client, project: Project):
 
 
 async def test_extract_enqueues_job(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep01.mkv"; vid.write_bytes(b"")
-    img = tmp_path / "ref.png"; img.write_bytes(b"")
+    vid = tmp_path / "ep01.mkv"
+    vid.write_bytes(b"")
+    img = tmp_path / "ref.png"
+    img.write_bytes(b"")
     project.add_ref(img)
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     resp = await client.post(f"/api/projects/{project.slug}/sources/0/extract")
@@ -414,7 +423,8 @@ async def test_stream_serves_video_with_range_support(
 async def test_preview_serves_cached_mode_file_with_range(
     client, project: Project, tmp_path: Path,
 ):
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     previews = project.root / ".previews"
     previews.mkdir(parents=True, exist_ok=True)
@@ -433,7 +443,8 @@ async def test_preview_serves_cached_mode_file_with_range(
 
 
 async def test_preview_404_when_not_converted(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     resp = await client.get(f"/api/projects/{project.slug}/sources/0/preview?mode=remux")
     assert resp.status_code == 404
@@ -443,7 +454,8 @@ async def test_delete_preview_removes_cached_files(
     client, project: Project, tmp_path: Path,
 ):
     """DELETE /preview removes the cached conversion(s) so they can be re-made."""
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     previews = project.root / ".previews"
     previews.mkdir(parents=True, exist_ok=True)
@@ -463,7 +475,8 @@ async def test_delete_preview_removes_cached_files(
 
 
 async def test_delete_preview_single_mode(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     previews = project.root / ".previews"
     previews.mkdir(parents=True, exist_ok=True)
@@ -750,13 +763,9 @@ async def test_segments_404_for_missing_video(
 
 # ---------------- convert command builder ----------------
 
-from pathlib import Path as _P
-
-from neme_anima.server.api.sources import _convert_cmd
-
 
 def test_convert_cmd_remux_copies_video_no_reencode():
-    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "remux", with_audio=True)
+    cmd = _convert_cmd(Path("/in.mkv"), Path("/out.mp4"), "remux", with_audio=True)
     assert "copy" in cmd                      # video stream copied, not re-encoded
     assert "hvc1" in cmd                      # tagged so Apple/Safari recognise it
     assert "libx264" not in cmd
@@ -764,7 +773,7 @@ def test_convert_cmd_remux_copies_video_no_reencode():
 
 
 def test_convert_cmd_h264_scales_to_480p():
-    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "h264", with_audio=True)
+    cmd = _convert_cmd(Path("/in.mkv"), Path("/out.mp4"), "h264", with_audio=True)
     assert "libx264" in cmd
     assert any("scale='min(854,iw)':-2" in tok for tok in cmd)
     assert "copy" not in cmd
@@ -772,13 +781,13 @@ def test_convert_cmd_h264_scales_to_480p():
 
 
 def test_convert_cmd_without_audio_uses_an():
-    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "h264", with_audio=False)
+    cmd = _convert_cmd(Path("/in.mkv"), Path("/out.mp4"), "h264", with_audio=False)
     assert "-an" in cmd
     assert "aac" not in cmd
 
 
 def test_convert_cmd_remux_without_audio_keeps_video_copy():
-    cmd = _convert_cmd(_P("/in.mkv"), _P("/out.mp4"), "remux", with_audio=False)
+    cmd = _convert_cmd(Path("/in.mkv"), Path("/out.mp4"), "remux", with_audio=False)
     assert "-an" in cmd                       # audio suppressed on the no-audio retry
     assert "copy" in cmd and "hvc1" in cmd    # video still copied losslessly
     assert "aac" not in cmd                   # no audio encoder when -an
@@ -786,8 +795,6 @@ def test_convert_cmd_remux_without_audio_keeps_video_copy():
 
 
 # ---------------- convert endpoints ----------------
-
-import asyncio as _asyncio
 
 
 async def _wait_convert_ready(client, slug, mode, *, tries=100):
@@ -824,7 +831,8 @@ async def test_convert_h264_produces_cached_mp4_and_reaches_ready(
 
 
 async def test_convert_rejects_bad_mode(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     resp = await client.post(
         f"/api/projects/{project.slug}/sources/0/convert?mode=av1",
@@ -833,7 +841,8 @@ async def test_convert_rejects_bad_mode(client, project: Project, tmp_path: Path
 
 
 async def test_convert_404_when_file_missing(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "gone.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "gone.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     vid.unlink()
     resp = await client.post(
@@ -843,7 +852,8 @@ async def test_convert_404_when_file_missing(client, project: Project, tmp_path:
 
 
 async def test_convert_status_idle_before_start(client, project: Project, tmp_path: Path):
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     resp = await client.get(
         f"/api/projects/{project.slug}/sources/0/convert/status?mode=h264",
@@ -856,7 +866,8 @@ async def test_convert_cached_file_short_circuits(
     client, project: Project, tmp_path: Path,
 ):
     """A pre-existing cache file means /convert returns ready without ffmpeg."""
-    vid = tmp_path / "ep.mkv"; vid.write_bytes(b"")
+    vid = tmp_path / "ep.mkv"
+    vid.write_bytes(b"")
     await client.post(f"/api/projects/{project.slug}/sources", json={"paths": [str(vid)]})
     previews = project.root / ".previews"
     previews.mkdir(parents=True, exist_ok=True)

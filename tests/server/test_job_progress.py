@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from neme_anima.server.events import Broadcaster, Event
 from neme_anima.server.job_progress import BroadcasterProgress
-
 
 STAGES = [("setup", "Setup"), ("detect", "Detect"), ("save", "Save")]
 
@@ -18,7 +15,7 @@ async def _drain(sub: asyncio.Queue[Event], *, timeout: float = 0.2) -> list[Eve
     while True:
         try:
             out.append(await asyncio.wait_for(sub.get(), timeout=timeout))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return out
 
 
