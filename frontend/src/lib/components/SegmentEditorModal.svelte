@@ -2,6 +2,7 @@
   import * as api from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import type { Segment, Source } from "$lib/types";
+  import { focusTrap } from "$lib/actions/focusTrap";
 
   type Props = {
     source: Source;
@@ -834,6 +835,7 @@
     aria-modal="true"
     aria-labelledby="segment-editor-title"
     tabindex="-1"
+    use:focusTrap={{}}
     class="bg-ink-900 border border-ink-700 rounded-xl shadow-2xl p-5 max-w-4xl w-full mx-4 max-h-[92vh] overflow-y-auto"
     onclick={(e) => e.stopPropagation()}
   >

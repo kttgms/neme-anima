@@ -2,6 +2,7 @@
   import * as api from "$lib/api";
   import { framesStore } from "$lib/stores/frames.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { focusTrap } from "$lib/actions/focusTrap";
 
   type Props = { onclose: () => void };
   const { onclose }: Props = $props();
@@ -158,7 +159,7 @@
   <div
     class="bg-ink-900 border border-ink-700 rounded-xl p-5 max-w-xl w-full mx-4 shadow-2xl"
     role="document"
-    onkeydown={(e) => e.stopPropagation()}
+    use:focusTrap={{ onEscape: onclose }}
   >
     <h2 class="text-lg font-semibold mb-1">Bulk regex tag replace</h2>
     <p class="text-xs text-slate-500 mb-2">{filenames.length} frame{filenames.length === 1 ? "" : "s"} selected · operates on the danbooru tag line only (LLM description preserved)</p>

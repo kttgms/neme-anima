@@ -2,6 +2,7 @@
   import * as api from "$lib/api";
   import type { CharacterView } from "$lib/types";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { focusTrap } from "$lib/actions/focusTrap";
 
   type Props = {
     sourceSlug: string;
@@ -59,12 +60,8 @@
     }
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") onclose();
-  }
-</script>
 
-<svelte:window onkeydown={handleKeydown} />
+</script>
 
 <div
   role="dialog"
@@ -72,7 +69,7 @@
   aria-labelledby="copy-char-title"
   class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
 >
-  <div class="bg-ink-900 border border-ink-700 rounded-xl p-6 w-[40rem] max-w-[92vw]">
+  <div class="bg-ink-900 border border-ink-700 rounded-xl p-6 w-[40rem] max-w-[92vw]" use:focusTrap={{ onEscape: onclose }}>
     <h2 id="copy-char-title" class="text-lg font-medium text-slate-100 mb-1">
       Copy character "{character.name}" to another project
     </h2>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import * as api from "$lib/api";
+  import { focusTrap } from "$lib/actions/focusTrap";
   import { createFlash } from "$lib/composables/flash.svelte";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { toasts } from "$lib/stores/toasts.svelte";
@@ -367,6 +368,7 @@
   role="dialog"
   aria-modal="true"
   tabindex="-1"
+  use:focusTrap={{}}
   onmousedown={(e) => { if (e.target === e.currentTarget) requestClose(); }}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}

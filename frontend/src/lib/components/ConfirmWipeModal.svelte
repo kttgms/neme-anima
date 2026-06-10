@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { WipePreview } from "$lib/api";
   import { projectsStore } from "$lib/stores/projects.svelte";
+  import { focusTrap } from "$lib/actions/focusTrap";
 
   type Props = {
     /** The "what would be wiped" snapshot fetched just before the user
@@ -57,9 +58,10 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="confirm-wipe-title"
+    tabindex="-1"
+    use:focusTrap={{ onEscape: oncancel }}
     class="bg-ink-900 border border-ink-700 rounded-xl shadow-2xl p-5 max-w-md w-full mx-4"
     onclick={(e) => e.stopPropagation()}
-    onkeydown={(e) => e.stopPropagation()}
   >
     <h2 id="confirm-wipe-title" class="text-base font-semibold text-slate-100 mb-1">
       {action} will replace existing frames
