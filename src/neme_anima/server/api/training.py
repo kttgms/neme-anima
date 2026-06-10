@@ -13,11 +13,12 @@ import re
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from neme_anima import training as training_lib
+from neme_anima.server.api import deps
 from neme_anima.storage.project import Project, TrainingConfig
 
 router = APIRouter(prefix="/api/projects", tags=["training"])
@@ -88,19 +89,6 @@ class StartBody(BaseModel):
 # ----- helpers ---------------------------------------------------------------
 
 
-def _load_or_404(request: Request, slug: str) -> Project:
-    entry = request.app.state.registry.get(slug)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
-    try:
-        return Project.load(Path(entry.folder))
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"project files missing for {slug!r} at {entry.folder}",
-        ) from e
-
-
 def _config_with_path_checks(cfg: TrainingConfig) -> dict:
     """Pair the config dict with a per-path validation dict for the UI."""
     return {
@@ -127,16 +115,14 @@ def _config_with_path_checks(cfg: TrainingConfig) -> dict:
 
 
 @router.get("/{slug}/training/config")
-async def get_training_config(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def get_training_config(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     return _config_with_path_checks(project.training)
 
 
 @router.patch("/{slug}/training/config")
 async def patch_training_config(
-    request: Request, slug: str, body: TrainingConfigBody,
+    body: TrainingConfigBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
-    project = _load_or_404(request, slug)
     payload = body.model_dump(exclude_none=True)
     valid_field_names = {f.name for f in fields(TrainingConfig)}
     for key, value in payload.items():
@@ -149,11 +135,10 @@ async def patch_training_config(
 
 @router.post("/{slug}/training/check-path")
 async def check_path(
-    request: Request, slug: str, body: CheckPathBody,
+    body: CheckPathBody, _project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
-    # ``slug`` is required to scope the request even though the check is
-    # purely filesystem-side; it gives us a simple authz hook later.
-    _ = _load_or_404(request, slug)
+    # ``{slug}`` scopes the request even though the check is purely
+    # filesystem-side; it gives us a simple authz hook later.
     return asdict(training_lib.check_path(body.path, expect=body.expect))
 
 
@@ -161,21 +146,19 @@ async def check_path(
 
 
 @router.get("/{slug}/training/status")
-async def get_status(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def get_status(request: Request, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     return request.app.state.training.status(project)
 
 
 @router.get("/{slug}/training/log")
 async def get_log(
-    request: Request, slug: str, tail: int = 1000,
+    request: Request, tail: int = 1000, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Return the last ``tail`` log lines.
 
     For an active run we read from the in-memory buffer; for a finished run
     we tail the on-disk ``run.log`` of the most recent run directory.
     """
-    project = _load_or_404(request, slug)
     mgr = request.app.state.training
     if mgr.active_slug == project.slug:
         return {"source": "live", "lines": mgr.get_log_buffer(project)[-tail:]}
@@ -204,9 +187,9 @@ async def get_log(
 
 @router.post("/{slug}/training/start", status_code=202)
 async def start_training(
-    request: Request, slug: str, body: StartBody = StartBody(),  # noqa: B008
+    request: Request, body: StartBody = StartBody(),  # noqa: B008
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
-    project = _load_or_404(request, slug)
     try:
         return await request.app.state.training.start(
             project,
@@ -218,8 +201,7 @@ async def start_training(
 
 
 @router.post("/{slug}/training/stop", status_code=202)
-async def stop_training(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def stop_training(request: Request, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     try:
         return await request.app.state.training.stop(project)
     except RuntimeError as e:
@@ -228,7 +210,8 @@ async def stop_training(request: Request, slug: str) -> dict:
 
 @router.post("/{slug}/training/resume", status_code=202)
 async def resume_training(
-    request: Request, slug: str, body: StartBody = StartBody(),  # noqa: B008
+    request: Request, body: StartBody = StartBody(),  # noqa: B008
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Continue a prior run from its last saved DeepSpeed state.
 
@@ -242,7 +225,6 @@ async def resume_training(
     The run wrapper directory is reused, so the resumed run keeps appending
     checkpoints alongside the prior ones rather than starting a new tree.
     """
-    project = _load_or_404(request, slug)
     runs = training_lib.list_runs(project)
     run_name = body.run_dir_name
     resume_target = body.resume_from_checkpoint
@@ -300,16 +282,14 @@ async def resume_training(
 
 
 @router.get("/{slug}/training/runs")
-async def list_runs(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def list_runs(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     return {"runs": training_lib.list_runs(project)}
 
 
 @router.get("/{slug}/training/runs/{run_name}/checkpoints")
 async def list_checkpoints(
-    request: Request, slug: str, run_name: str,
+    run_name: str, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
-    project = _load_or_404(request, slug)
     run_dir = project.training_runs_dir / run_name
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"unknown run: {run_name}")
@@ -326,12 +306,11 @@ async def list_checkpoints(
     status_code=204,
 )
 async def delete_checkpoint(
-    request: Request, slug: str, run_name: str, ckpt_name: str,
-    subdir: str = "",
+    run_name: str, ckpt_name: str, subdir: str = "",
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> Response:
     """Delete one checkpoint. ``subdir`` is the diffusion-pipe sub-run-dir
     that nests this checkpoint (empty for direct children of ``run_dir``)."""
-    project = _load_or_404(request, slug)
     run_dir = project.training_runs_dir / run_name
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"unknown run: {run_name}")
@@ -364,15 +343,14 @@ def _sanitize_filename(name: str) -> str:
 
 @router.get("/{slug}/training/runs/{run_name}/checkpoints/{ckpt_name}/export")
 async def export_checkpoint(
-    request: Request, slug: str, run_name: str, ckpt_name: str,
-    subdir: str = "",
+    run_name: str, ckpt_name: str, subdir: str = "",
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> FileResponse:
     """Stream a checkpoint's LoRA ``.safetensors`` as a project-named download.
     The on-disk file keeps its original name, but is tagged with neme-anima
     provenance metadata before streaming."""
     # ``subdir`` is the diffusion-pipe sub-run-dir nesting this checkpoint
     # (empty for direct children of ``run_dir``); mirrors delete_checkpoint.
-    project = _load_or_404(request, slug)
     run_dir = project.training_runs_dir / run_name
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"unknown run: {run_name}")
@@ -420,10 +398,9 @@ async def export_checkpoint(
 
 @router.delete("/{slug}/training/runs/{run_name}", status_code=204)
 async def delete_run(
-    request: Request, slug: str, run_name: str,
+    request: Request, run_name: str, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> Response:
-    project = _load_or_404(request, slug)
-    if request.app.state.training.active_slug == slug:
+    if request.app.state.training.active_slug == project.slug:
         raise HTTPException(
             status_code=409,
             detail="cannot delete a run while training is active",
@@ -443,19 +420,17 @@ async def delete_run(
 
 
 @router.get("/{slug}/training/dataset-preview")
-async def dataset_preview(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def dataset_preview(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     return training_lib.dataset_preview(project, sample_n=5)
 
 
 @router.get("/{slug}/training/run-toml-preview")
-async def run_toml_preview(request: Request, slug: str) -> dict:
+async def run_toml_preview(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Render the dataset.toml + run.toml the trainer would see.
 
     Useful for the user to inspect before clicking Start. We use a synthetic
     run-dir path (under training/runs/) without creating it.
     """
-    project = _load_or_404(request, slug)
     fake_run = project.training_runs_dir / "<would-be-created-on-start>"
     fake_dataset = fake_run / "dataset.toml"
     return {

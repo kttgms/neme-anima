@@ -6,11 +6,12 @@ import shutil
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from neme_anima.config import Thresholds
 from neme_anima.extraction_cache import cache_state_for_source
+from neme_anima.server.api import deps
 from neme_anima.storage.project import Project
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -196,30 +197,18 @@ async def register_existing(request: Request, body: RegisterBody) -> dict:
     return _project_view(project)
 
 
-def _load_or_404(request: Request, slug: str) -> Project:
-    entry = request.app.state.registry.get(slug)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
-    try:
-        return Project.load(Path(entry.folder))
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"project files missing for {slug!r} at {entry.folder} — "
-                   "folder was moved or deleted; remove the registry entry or restore the files",
-        ) from e
-
-
 @router.get("/{slug}")
-async def get_project(request: Request, slug: str) -> dict:
-    project = _load_or_404(request, slug)
+async def get_project(
+    slug: str, request: Request, project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     request.app.state.registry.touch(slug)
     return _project_view(project)
 
 
 @router.patch("/{slug}")
-async def patch_project(request: Request, slug: str, body: PatchProjectBody) -> dict:
-    project = _load_or_404(request, slug)
+async def patch_project(
+    request: Request, body: PatchProjectBody, project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     if body.name is not None:
         new_name = body.name.strip()
         if not new_name:
@@ -263,9 +252,8 @@ async def delete_project(
 
 
 @router.delete("/{slug}/output/rejected")
-async def delete_rejected_frames(request: Request, slug: str) -> dict:
+async def delete_rejected_frames(project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Delete every file in the project's rejected/ folder. Idempotent."""
-    project = _load_or_404(request, slug)
     rejected = project.rejected_dir
     deleted = 0
     if rejected.exists():
