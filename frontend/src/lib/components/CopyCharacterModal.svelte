@@ -23,13 +23,14 @@
   });
 
   let preview = $state<api.CharacterCopyReport | null>(null);
-  let busy = $state(false);
+  let busyAction = $state<"preview" | "copy" | null>(null);
+  let busy = $derived(busyAction !== null);
   let error = $state<string | null>(null);
   let confirmed = $state(false);
 
   async function runPreview() {
     if (!destinationSlug) return;
-    busy = true; error = null;
+    busyAction = "preview"; error = null;
     try {
       preview = await api.copyCharacterToProject(sourceSlug, character.slug, {
         destination_slug: destinationSlug,
@@ -39,13 +40,13 @@
       error = (e as Error).message;
       preview = null;
     } finally {
-      busy = false;
+      busyAction = null;
     }
   }
 
   async function runCopy() {
     if (!destinationSlug) return;
-    busy = true; error = null;
+    busyAction = "copy"; error = null;
     try {
       const result = await api.copyCharacterToProject(
         sourceSlug, character.slug,
@@ -56,7 +57,7 @@
     } catch (e) {
       error = (e as Error).message;
     } finally {
-      busy = false;
+      busyAction = null;
     }
   }
 
@@ -137,13 +138,13 @@
           onclick={runPreview}
           disabled={busy || !destinationSlug}
           class="px-3 py-1.5 text-xs rounded bg-ink-800 border border-ink-700 text-slate-200 hover:bg-ink-700 disabled:opacity-40"
-        >Preview</button>
+        >{busyAction === "preview" ? "Previewing…" : "Preview"}</button>
         <button
           type="button"
           onclick={runCopy}
           disabled={busy || !destinationSlug || !preview}
           class="px-3 py-1.5 text-xs rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-40"
-        >Confirm copy</button>
+        >{busyAction === "copy" ? "Copying…" : "Confirm copy"}</button>
       {/if}
     </div>
   </div>
