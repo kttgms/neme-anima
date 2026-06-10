@@ -277,3 +277,29 @@ async def test_export_checkpoint_glob_fallback(app, tmp_path: Path):
         )
         assert resp.status_code == 200
         assert _read_safetensors_metadata(resp.content)["neme_anima_checkpoint"] == "epoch5"
+
+
+async def test_resume_calls_start_with_latest_resumable_subdir(
+    client, app, project: Project,
+):
+    """Happy path: resume finds the newest run, picks its resumable
+    DeepSpeed subdir, and reuses the run directory."""
+    run_dir = project.training_runs_dir / "20260601-120000-anima"
+    sub = run_dir / "20260601_12-00-01"
+    sub.mkdir(parents=True)
+    (sub / "latest").write_text("global_step10")
+
+    calls: list[tuple] = []
+
+    class RecordingManager:
+        active_slug = None
+
+        async def start(self, project, *, resume_from_checkpoint=None,
+                        run_dir_name=None):
+            calls.append((project.slug, resume_from_checkpoint, run_dir_name))
+            return {"running": True}
+
+    app.state.training = RecordingManager()
+    resp = await client.post(f"/api/projects/{project.slug}/training/resume")
+    assert resp.status_code == 202
+    assert calls == [(project.slug, sub.name, run_dir.name)]

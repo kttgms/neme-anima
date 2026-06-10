@@ -877,3 +877,41 @@ async def test_convert_cached_file_short_circuits(
     )
     assert resp.status_code == 200
     assert resp.json()["state"] == "ready"
+
+
+# ---------------- conversion robustness ----------------
+
+
+def test_run_one_ffmpeg_kill_timer_bounds_a_hung_process():
+    """The wall-clock killer must terminate a process that never finishes;
+    without it the progress loop blocks on stdout EOF forever."""
+    import time as _time
+
+    from neme_anima.server.api.sources import _run_one_ffmpeg
+
+    t0 = _time.monotonic()
+    rc, _stderr = _run_one_ffmpeg(
+        ["sleep", "30"], ("test", "h264"), 0.0, timeout=0.3,
+    )
+    assert rc != 0
+    assert _time.monotonic() - t0 < 5.0
+
+
+def test_transcode_cleans_tmp_on_failure(tmp_path: Path, monkeypatch):
+    from neme_anima.server.api import sources as sources_mod
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
+
+    def always_fail(cmd, key, duration, *, timeout=900.0):
+        dest = Path(cmd[-1])
+        dest.write_bytes(b"")  # simulate a partial, empty output
+        return 1, "simulated encoder explosion"
+
+    monkeypatch.setattr(sources_mod, "_run_one_ffmpeg", always_fail)
+    src = tmp_path / "in.mkv"
+    src.write_bytes(b"x")
+    dest = tmp_path / "out.mp4"
+    with pytest.raises(RuntimeError, match="ffmpeg failed"):
+        sources_mod._transcode_for_playback(src, dest, "h264", 0.0, ("k", "h264"))
+    assert not dest.exists()
+    assert not list(tmp_path.glob("*.tmp*"))
