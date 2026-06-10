@@ -8,6 +8,9 @@
   import { trainingStore } from "$lib/stores/training.svelte";
   import { connectEvents, type Connection } from "$lib/ws";
   import { setFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
+  import { matchShortcut } from "$lib/shortcuts.svelte";
+  import * as api from "$lib/api";
+  import { toasts } from "$lib/stores/toasts.svelte";
   import TopStrip from "$lib/components/TopStrip.svelte";
   import FramesTab from "$lib/components/FramesTab.svelte";
   import RegexModal from "$lib/components/RegexModal.svelte";
@@ -15,6 +18,7 @@
   import DeleteProjectModal from "$lib/components/DeleteProjectModal.svelte";
   import ConfirmFrameOverwriteModal from "$lib/components/ConfirmFrameOverwriteModal.svelte";
   import ToastHost from "$lib/components/ToastHost.svelte";
+  import ShortcutHelpModal from "$lib/components/ShortcutHelpModal.svelte";
   import SourcesTab from "$lib/components/SourcesTab.svelte";
   import SettingsTab from "$lib/components/SettingsTab.svelte";
   import TrainingTab from "$lib/components/TrainingTab.svelte";
@@ -26,6 +30,7 @@
   // uses backdrop-blur which creates a CSS containing block for
   // position:fixed descendants, clipping any modal mounted under it.
   let deleteProjectOpen = $state(false);
+  let helpOpen = $state(false);
   type FrameOverwriteRequest = {
     action: "retag" | "describe";
     selectedCount: number;
@@ -87,16 +92,122 @@
   function onKey(ev: KeyboardEvent) {
     const target = ev.target as HTMLElement | null;
     if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-    // Don't run global frames shortcuts (a / d / Escape) when a modal is open —
-    // otherwise Escape would close the modal AND clear the selection.
+    // Don't run shortcuts while a modal is open — Escape must close the modal,
+    // not clear the selection, and FullSizeModal owns its own arrow nav.
     if (document.querySelector('[role="dialog"]')) return;
-    if (viewStore.tab !== "frames") return;
-    if (ev.key === "a" && !ev.ctrlKey && !ev.metaKey) {
-      framesStore.selectAll();
-      ev.preventDefault();
-    } else if (ev.key === "d" || ev.key === "Escape") {
-      framesStore.clear();
-      ev.preventDefault();
+
+    const sc = matchShortcut(ev);
+    if (!sc) return;
+    // Frames-only shortcuts are inert on other tabs; `?` (global) still works.
+    if (!sc.global && viewStore.tab !== "frames") return;
+
+    switch (sc.action) {
+      case "select-all":
+        framesStore.selectAll();
+        break;
+      case "clear-selection":
+        framesStore.clear();
+        break;
+      case "bulk-tag":
+        if (framesStore.selectedFilenames().length > 0) bulkTagSelection();
+        break;
+      case "bulk-describe":
+        if (framesStore.selectedFilenames().length > 0) bulkDescribeSelection();
+        break;
+      case "open-regex":
+        if (framesStore.selectedFilenames().length > 0) regexOpen = true;
+        break;
+      case "open-help":
+        helpOpen = true;
+        break;
+    }
+    ev.preventDefault();
+  }
+
+  // Keyboard `t` / `s`: same effect as ActionBar's Tag / Describe chips, but
+  // reachable without the selection pill in view. They reuse the App-owned
+  // overwrite confirm and the per-frame loop (one frame at a time → per-frame
+  // badge feedback; failed frames stay selected as a retry hint).
+  async function bulkTagSelection() {
+    const slug = projectsStore.active?.slug;
+    if (!slug) return;
+    const filenames = framesStore.selectedFilenames();
+    if (filenames.length === 0) return;
+    const affected = framesStore.items.filter(
+      (it) => filenames.includes(it.filename) && it.has_tags,
+    ).length;
+    if (
+      affected > 0 &&
+      !(await confirmFrameOverwrite("retag", filenames.length, affected))
+    ) {
+      return;
+    }
+    framesStore.markProcessing(filenames);
+    let succeeded = 0;
+    for (const filename of filenames) {
+      try {
+        const res = await api.bulkRetagDanbooru(slug, [filename]);
+        if (res.retagged > 0) {
+          framesStore.markRetagged(filename);
+          framesStore.deselect([filename]);
+          succeeded += 1;
+        }
+      } catch {
+        /* failed frame stays selected as the retry hint */
+      } finally {
+        framesStore.unmarkProcessing(filename);
+      }
+    }
+    const failed = filenames.length - succeeded;
+    if (failed > 0) {
+      toasts.error(
+        `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
+          "failed to tag — they stay selected so you can retry.",
+      );
+    }
+  }
+
+  async function bulkDescribeSelection() {
+    const slug = projectsStore.active?.slug;
+    if (!slug) return;
+    if (!projectsStore.active?.llm?.model) {
+      toasts.info("Pick an LLM model in Settings to describe frames.");
+      return;
+    }
+    const filenames = framesStore.selectedFilenames();
+    if (filenames.length === 0) return;
+    const affected = framesStore.items.filter(
+      (it) => filenames.includes(it.filename) && it.has_description,
+    ).length;
+    if (
+      affected > 0 &&
+      !(await confirmFrameOverwrite("describe", filenames.length, affected))
+    ) {
+      return;
+    }
+    framesStore.markProcessing(filenames);
+    let succeeded = 0;
+    for (const filename of filenames) {
+      try {
+        const res = await api.bulkRetagLLM(slug, [filename]);
+        if (res.described > 0) {
+          const eff = res.effective_filenames?.[0] ?? filename;
+          framesStore.markDescribed(eff);
+          framesStore.deselect([filename]);
+          succeeded += 1;
+        }
+      } catch {
+        /* failed frame stays selected as the retry hint */
+      } finally {
+        framesStore.unmarkProcessing(filename);
+      }
+    }
+    const failed = filenames.length - succeeded;
+    if (failed > 0) {
+      toasts.error(
+        `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
+          "failed to describe — they stay selected so you can retry.",
+      );
     }
   }
 </script>
@@ -147,6 +258,9 @@
       onconfirm={() => resolveFrameOverwrite(true)}
       oncancel={() => resolveFrameOverwrite(false)}
     />
+  {/if}
+  {#if helpOpen}
+    <ShortcutHelpModal onclose={() => (helpOpen = false)} />
   {/if}
   <ToastHost />
 </div>
