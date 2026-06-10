@@ -24,7 +24,9 @@ async def cancel(request: Request, job_id: str) -> Response:
         raise HTTPException(status_code=404, detail=f"unknown job_id: {job_id}")
     # A running job parked at the pause_before_tag gate blocks on a
     # threading.Event in the worker thread and can't observe the cancel
-    # token — release it so the worker winds down and the queue moves on.
+    # token — release it so the worker can finish and the queue moves on
+    # (the job is then labelled cancelled; the pipeline itself doesn't
+    # poll the token, so the remaining stage still runs to completion).
     progress = request.app.state.active_progresses.get(job_id)
     if progress is not None and progress.is_paused:
         progress.resume()

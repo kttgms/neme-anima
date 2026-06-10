@@ -891,7 +891,7 @@ def test_run_one_ffmpeg_kill_timer_bounds_a_hung_process():
 
     t0 = _time.monotonic()
     rc, _stderr = _run_one_ffmpeg(
-        ["sleep", "30"], ("test", "h264"), 0.0, timeout=0.3,
+        ["sleep", "5"], ("test", "h264"), 0.0, timeout=0.3,
     )
     assert rc != 0
     assert _time.monotonic() - t0 < 5.0
