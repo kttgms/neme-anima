@@ -10,10 +10,11 @@ import re
 import secrets
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from neme_anima.server.api import deps
 from neme_anima.storage.metadata import FrameRecord, MetadataLog
 from neme_anima.storage.project import CROP_SUFFIX, Project
 from neme_anima.tag import join_sidecar, split_sidecar
@@ -63,19 +64,6 @@ class CropBody(BaseModel):
     height: int
 
 
-def _load(request: Request, slug: str) -> Project:
-    entry = request.app.state.registry.get(slug)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"unknown project: {slug}")
-    try:
-        return Project.load(Path(entry.folder))
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"project files missing for {slug!r} at {entry.folder}",
-        ) from e
-
-
 def _frame_paths(project: Project, filename: str) -> tuple[Path, Path]:
     return (project.kept_dir / f"{filename}.png",
             project.kept_dir / f"{filename}.txt")
@@ -119,7 +107,7 @@ UNSORTED_FILTER_SENTINEL = "__unsorted__"
 
 @router.get("/{slug}/frames")
 async def list_frames(
-    request: Request, slug: str,
+    project: Project = Depends(deps.get_project),  # noqa: B008
     source: str | None = Query(None),
     kept_only: bool = Query(True),
     query: str | None = Query(None),
@@ -127,7 +115,6 @@ async def list_frames(
     offset: int = Query(0),
     limit: int = Query(500),
 ) -> dict:
-    project = _load(request, slug)
     log = MetadataLog(project.metadata_path)
     known_slugs = {c.slug for c in project.characters}
 
@@ -257,8 +244,9 @@ def _sidecar_flags(txt_path: Path) -> dict[str, bool]:
 
 
 @router.get("/{slug}/frames/{filename}/image")
-async def get_frame_image(request: Request, slug: str, filename: str) -> FileResponse:
-    project = _load(request, slug)
+async def get_frame_image(
+    filename: str, project: Project = Depends(deps.get_project),  # noqa: B008
+) -> FileResponse:
     png, _ = _frame_paths(project, filename)
     if not png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
@@ -266,8 +254,7 @@ async def get_frame_image(request: Request, slug: str, filename: str) -> FileRes
 
 
 @router.get("/{slug}/frames/{filename}/tags")
-async def get_tags(request: Request, slug: str, filename: str) -> dict:
-    project = _load(request, slug)
+async def get_tags(filename: str, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     _, txt = _frame_paths(project, filename)
     if not txt.exists():
         return {"text": ""}
@@ -275,7 +262,9 @@ async def get_tags(request: Request, slug: str, filename: str) -> dict:
 
 
 @router.put("/{slug}/frames/{filename}/tags")
-async def put_tags(request: Request, slug: str, filename: str, body: PutTagsBody) -> dict:
+async def put_tags(
+    filename: str, body: PutTagsBody, project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     """Replace the sidecar with the body's text.
 
     The request can be a single line (danbooru only) or two lines
@@ -292,7 +281,6 @@ async def put_tags(request: Request, slug: str, filename: str, body: PutTagsBody
     two-line body still overwrites whatever's on disk — that's the
     description-modal path.
     """
-    project = _load(request, slug)
     png, txt = _frame_paths(project, filename)
     if not png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
@@ -312,9 +300,8 @@ async def put_tags(request: Request, slug: str, filename: str, body: PutTagsBody
 
 
 @router.get("/{slug}/frames/{filename}/description")
-async def get_description(request: Request, slug: str, filename: str) -> dict:
+async def get_description(filename: str, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Return only the LLM description (line 2 of the sidecar)."""
-    project = _load(request, slug)
     _, txt = _frame_paths(project, filename)
     if not txt.exists():
         return {"text": ""}
@@ -324,10 +311,9 @@ async def get_description(request: Request, slug: str, filename: str) -> dict:
 
 @router.put("/{slug}/frames/{filename}/description")
 async def put_description(
-    request: Request, slug: str, filename: str, body: PutDescriptionBody,
+    filename: str, body: PutDescriptionBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Replace only the description line; the danbooru tag line is preserved."""
-    project = _load(request, slug)
     png, txt = _frame_paths(project, filename)
     if not png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
@@ -363,8 +349,7 @@ def _cleanup_crop_artifacts(project: Project, filename: str) -> None:
 
 
 @router.delete("/{slug}/frames/{filename}", status_code=204)
-async def delete_frame(request: Request, slug: str, filename: str) -> Response:
-    project = _load(request, slug)
+async def delete_frame(filename: str, project: Project = Depends(deps.get_project)) -> Response:  # noqa: B008
     png, txt = _frame_paths(project, filename)
     if png.exists():
         png.unlink()
@@ -375,8 +360,7 @@ async def delete_frame(request: Request, slug: str, filename: str) -> Response:
 
 
 @router.post("/{slug}/frames/bulk-delete")
-async def bulk_delete(request: Request, slug: str, body: BulkDeleteBody) -> dict:
-    project = _load(request, slug)
+async def bulk_delete(body: BulkDeleteBody, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     deleted = 0
     for filename in body.filenames:
         png, txt = _frame_paths(project, filename)
@@ -391,7 +375,7 @@ async def bulk_delete(request: Request, slug: str, body: BulkDeleteBody) -> dict
 
 @router.post("/{slug}/frames/bulk-tags-replace")
 async def bulk_tags_replace(
-    request: Request, slug: str, body: BulkReplaceBody,
+    body: BulkReplaceBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Run a regex over the *danbooru* line only — the LLM description on row
     two stays untouched so the user can rewrite tags without disturbing
@@ -406,7 +390,6 @@ async def bulk_tags_replace(
         regex = re.compile(body.pattern, flags)
     except re.error as e:
         raise HTTPException(status_code=422, detail=f"invalid regex: {e}") from e
-    project = _load(request, slug)
     changed = 0
     for filename in body.filenames:
         _, txt = _frame_paths(project, filename)
@@ -423,13 +406,12 @@ async def bulk_tags_replace(
 
 @router.post("/{slug}/frames/bulk-retag-danbooru")
 async def bulk_retag_danbooru(
-    request: Request, slug: str, body: BulkRetagBody,
+    request: Request, body: BulkRetagBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Re-run the WD14 tagger on selected frames; preserves the LLM line."""
     import numpy as np
     from PIL import Image
 
-    project = _load(request, slug)
     tagger = _get_or_make_tagger(request)
 
     def _tag_one(filename: str) -> tuple[bool, str | None]:
@@ -470,9 +452,7 @@ async def bulk_retag_danbooru(
 
 
 @router.post("/{slug}/frames/bulk-retag-llm")
-async def bulk_retag_llm(
-    request: Request, slug: str, body: BulkRetagBody,
-) -> dict:
+async def bulk_retag_llm(body: BulkRetagBody, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Re-run the LLM description on selected frames; preserves the danbooru
     line. Returns 422 if the project has no LLM model configured — the
     frontend won't show the button in that state, but a stale tab might still
@@ -480,7 +460,6 @@ async def bulk_retag_llm(
     """
     from neme_anima.llm import DEFAULT_PROMPT, LLMUnavailable, describe_image
 
-    project = _load(request, slug)
     if not project.llm.model:
         raise HTTPException(
             status_code=422,
@@ -611,7 +590,9 @@ def _reconcile_review(raw: dict, existing: list[str], index) -> dict:
 
 
 @router.post("/{slug}/frames/{filename}/review-tags")
-async def review_frame_tags(request: Request, slug: str, filename: str) -> dict:
+async def review_frame_tags(
+    request: Request, filename: str, project: Project = Depends(deps.get_project),  # noqa: B008
+) -> dict:
     """LLM-assisted tag review for one frame (vision + danbooru tool calling).
 
     Read-only: returns a proposed diff (keep / remove-with-reason /
@@ -624,7 +605,6 @@ async def review_frame_tags(request: Request, slug: str, filename: str) -> dict:
     from neme_anima.llm import LLMUnavailable, review_tags
     from neme_anima.tag_vocabulary import load_index
 
-    project = _load(request, slug)
     if not project.llm.model:
         raise HTTPException(
             status_code=422,
@@ -717,13 +697,12 @@ def _crop_paths(project: Project, original_filename: str) -> tuple[Path, Path, P
 
 
 @router.get("/{slug}/frames/{filename}/crop")
-async def get_crop_rect(request: Request, slug: str, filename: str) -> dict:
+async def get_crop_rect(filename: str, project: Project = Depends(deps.get_project)) -> dict:  # noqa: B008
     """Return the saved crop rectangle for ``filename`` if one exists.
 
     404 when no crop has been confirmed for this frame yet — the modal uses
     that as the "no overlay, start full-image" signal.
     """
-    project = _load(request, slug)
     _, _, spec = _crop_paths(project, filename)
     if not spec.is_file():
         raise HTTPException(status_code=404, detail="no saved crop")
@@ -743,7 +722,7 @@ async def get_crop_rect(request: Request, slug: str, filename: str) -> dict:
 
 @router.post("/{slug}/frames/{filename}/crop")
 async def crop_frame_endpoint(
-    request: Request, slug: str, filename: str, body: CropBody,
+    filename: str, body: CropBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Save (or overwrite) the cropped derivative for an original frame.
 
@@ -754,7 +733,6 @@ async def crop_frame_endpoint(
     """
     from PIL import Image
 
-    project = _load(request, slug)
     src_png, _ = _frame_paths(project, filename)
     if not src_png.exists():
         raise HTTPException(status_code=404, detail="frame not found")
@@ -950,9 +928,9 @@ async def ingest_kept_image(
 @router.post("/{slug}/frames/upload")
 async def upload_frames(
     request: Request,
-    slug: str,
     files: list[UploadFile],
     character_slug: str | None = Query(None),
+    project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Accept dropped image files, store + auto-tag them as custom-source frames.
 
@@ -961,11 +939,9 @@ async def upload_frames(
     character — what the mono-character UI does today, and what dropping
     in the "All" view should do until CCIP-routing is wired in.
     """
-    project = _load(request, slug)
-    if character_slug not in (None, "") and project.character_by_slug(character_slug) is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {character_slug}")
+    cslug = deps.optional_character_slug(project, character_slug)
     target_slug = (
-        character_slug if character_slug
+        cslug if cslug
         else (project.characters[0].slug if project.characters else "default")
     )
     project.kept_dir.mkdir(parents=True, exist_ok=True)
@@ -1021,11 +997,6 @@ class BulkMoveBody(BaseModel):
     character_slug: str
 
 
-def _ensure_character_or_404(project: Project, slug: str) -> None:
-    if project.character_by_slug(slug) is None:
-        raise HTTPException(status_code=404, detail=f"unknown character: {slug}")
-
-
 def _append_moved_record(project: Project, rec: FrameRecord, new_slug: str) -> FrameRecord:
     """Append a copy of ``rec`` with ``character_slug`` swapped.
 
@@ -1058,7 +1029,7 @@ def _append_moved_record(project: Project, rec: FrameRecord, new_slug: str) -> F
 
 @router.post("/{slug}/frames/{filename}/character")
 async def move_frame_to_character(
-    request: Request, slug: str, filename: str, body: MoveFrameBody,
+    filename: str, body: MoveFrameBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Reassign a frame to a different character.
 
@@ -1066,8 +1037,7 @@ async def move_frame_to_character(
     on-disk PNG and sidecar stay where they are — this is a metadata-only
     operation, which is what makes per-character "moves" cheap.
     """
-    project = _load(request, slug)
-    _ensure_character_or_404(project, body.character_slug)
+    deps.require_character(project, body.character_slug)
     rec = _find_record(project, filename)
     if rec is None:
         raise HTTPException(status_code=404, detail="frame metadata not found")
@@ -1077,11 +1047,10 @@ async def move_frame_to_character(
 
 @router.post("/{slug}/frames/bulk-move")
 async def bulk_move_to_character(
-    request: Request, slug: str, body: BulkMoveBody,
+    body: BulkMoveBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Reassign many frames to a target character in one round-trip."""
-    project = _load(request, slug)
-    _ensure_character_or_404(project, body.character_slug)
+    deps.require_character(project, body.character_slug)
     moved = 0
     missing: list[str] = []
     for fn in body.filenames:
@@ -1145,11 +1114,10 @@ def _duplicate_for_character(
 
 @router.post("/{slug}/frames/{filename}/duplicate")
 async def duplicate_frame_for_character(
-    request: Request, slug: str, filename: str, body: MoveFrameBody,
+    filename: str, body: MoveFrameBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Also-assign a frame to a second character via a physical copy."""
-    project = _load(request, slug)
-    _ensure_character_or_404(project, body.character_slug)
+    deps.require_character(project, body.character_slug)
     rec = _find_record(project, filename)
     if rec is None:
         raise HTTPException(status_code=404, detail="frame metadata not found")
@@ -1159,12 +1127,11 @@ async def duplicate_frame_for_character(
 
 @router.post("/{slug}/frames/bulk-duplicate")
 async def bulk_duplicate_for_character(
-    request: Request, slug: str, body: BulkMoveBody,
+    body: BulkMoveBody, project: Project = Depends(deps.get_project),  # noqa: B008
 ) -> dict:
     """Also-assign many frames to a target character. Returns the new
     filenames so the caller can refresh the view to show them inline."""
-    project = _load(request, slug)
-    _ensure_character_or_404(project, body.character_slug)
+    deps.require_character(project, body.character_slug)
     duplicated: list[str] = []
     missing: list[str] = []
     for fn in body.filenames:
