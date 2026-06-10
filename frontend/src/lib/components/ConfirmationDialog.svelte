@@ -27,6 +27,7 @@
       use:focusTrap={{ onEscape: oncancel }}
       class="bg-ink-900 border border-ink-700 rounded-xl shadow-2xl p-5 max-w-md w-full"
       onclick={(e) => e.stopPropagation()}
+      onkeydown={(e) => e.stopPropagation()}
     >
       <h2
         id={titleId}
