@@ -450,6 +450,8 @@ export const bulkRetagDanbooru = (slug: string, filenames: string[]) =>
   request<{
     retagged: number;
     total: number;
+    /** Per-item failures: {filename, reason}. Empty when all succeeded. */
+    skipped: { filename: string; reason: string }[];
     /** Parallel to the request `filenames`. Entry differs from the input
      *  when a `_crop` derivative was tagged in place of the original. */
     effective_filenames: (string | null)[];
@@ -463,6 +465,8 @@ export const bulkRetagLLM = (slug: string, filenames: string[]) =>
     described: number;
     total: number;
     error: string | null;
+    /** Per-item failures: {filename, reason}. Empty when all succeeded. */
+    skipped: { filename: string; reason: string }[];
     /** Parallel to the request `filenames`. Entry is null when that
      *  filename failed; differs from the input when a `_crop` derivative
      *  was described in place of the original. */
