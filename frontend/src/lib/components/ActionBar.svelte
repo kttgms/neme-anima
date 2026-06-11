@@ -7,7 +7,8 @@
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
   import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
-  import { runBulkRetag, type BulkRetagActions } from "$lib/bulkRetag";
+  import { runBulkRetag } from "$lib/bulkRetag";
+  import { tagActions, describeActions } from "$lib/bulkRetagActions";
 
   type Props = {
     onopenRegex: () => void;
@@ -135,23 +136,6 @@
   let llmModelSelected = $derived(!!projectsStore.active?.llm?.model);
 
   let retagBusy = $state(false);
-
-  // Adapter objects bind the shared runner to this app's stores. The only
-  // per-kind difference is which cache-version map gets bumped on success.
-  const tagActions: BulkRetagActions = {
-    markProcessing: (f) => framesStore.markProcessing(f),
-    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
-    markDone: (f) => framesStore.markRetagged(f),
-    deselect: (f) => framesStore.deselect(f),
-    error: (m) => toasts.error(m),
-  };
-  const describeActions: BulkRetagActions = {
-    markProcessing: (f) => framesStore.markProcessing(f),
-    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
-    markDone: (f) => framesStore.markDescribed(f),
-    deselect: (f) => framesStore.deselect(f),
-    error: (m) => toasts.error(m),
-  };
 
   function selectedItems(filenames: string[]): FrameRecord[] {
     const selected = new Set(filenames);

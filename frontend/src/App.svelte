@@ -10,7 +10,8 @@
   import { setFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
   import { matchShortcut } from "$lib/shortcuts.svelte";
   import { toasts } from "$lib/stores/toasts.svelte";
-  import { runBulkRetag, type BulkRetagActions } from "$lib/bulkRetag";
+  import { runBulkRetag } from "$lib/bulkRetag";
+  import { tagActions, describeActions } from "$lib/bulkRetagActions";
   import TopStrip from "$lib/components/TopStrip.svelte";
   import FramesTab from "$lib/components/FramesTab.svelte";
   import RegexModal from "$lib/components/RegexModal.svelte";
@@ -65,21 +66,6 @@
     frameOverwriteRequest = null;
     req.resolve(confirmed);
   }
-
-  const tagActions: BulkRetagActions = {
-    markProcessing: (f) => framesStore.markProcessing(f),
-    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
-    markDone: (f) => framesStore.markRetagged(f),
-    deselect: (f) => framesStore.deselect(f),
-    error: (m) => toasts.error(m),
-  };
-  const describeActions: BulkRetagActions = {
-    markProcessing: (f) => framesStore.markProcessing(f),
-    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
-    markDone: (f) => framesStore.markDescribed(f),
-    deselect: (f) => framesStore.deselect(f),
-    error: (m) => toasts.error(m),
-  };
 
   onMount(async () => {
     await projectsStore.refresh();
