@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from neme_anima.server.api.sources import _convert_cmd
 from neme_anima.server.app import create_app
+from neme_anima.server.video_ops import _convert_cmd
 from neme_anima.storage.project import Project
 
 
@@ -597,7 +597,7 @@ async def test_capture_frame_uses_frame_idx_when_provided(
 
 
 def test_frame_index_seek_plan_uses_short_preroll():
-    from neme_anima.server.api.sources import _frame_index_seek_plan
+    from neme_anima.server.video_ops import _frame_index_seek_plan
 
     seek_seconds, local_frame_idx = _frame_index_seek_plan(
         68_784, fps=24.0, t_seconds=None,
@@ -608,7 +608,7 @@ def test_frame_index_seek_plan_uses_short_preroll():
 
 
 def test_frame_index_seek_plan_estimates_fps_from_playhead_time():
-    from neme_anima.server.api.sources import _frame_index_seek_plan
+    from neme_anima.server.video_ops import _frame_index_seek_plan
 
     seek_seconds, local_frame_idx = _frame_index_seek_plan(
         2400, fps=None, t_seconds=100.0,
@@ -621,7 +621,7 @@ def test_frame_index_seek_plan_estimates_fps_from_playhead_time():
 def test_extract_frame_by_index_uses_input_seek(monkeypatch, tmp_path: Path):
     import subprocess
 
-    from neme_anima.server.api import sources as sources_api
+    from neme_anima.server import video_ops as sources_api
 
     captured: dict[str, list[str]] = {}
     dest = tmp_path / "capture.png"
@@ -887,7 +887,7 @@ def test_run_one_ffmpeg_kill_timer_bounds_a_hung_process():
     without it the progress loop blocks on stdout EOF forever."""
     import time as _time
 
-    from neme_anima.server.api.sources import _run_one_ffmpeg
+    from neme_anima.server.video_ops import _run_one_ffmpeg
 
     t0 = _time.monotonic()
     rc, _stderr = _run_one_ffmpeg(
@@ -898,7 +898,7 @@ def test_run_one_ffmpeg_kill_timer_bounds_a_hung_process():
 
 
 def test_transcode_cleans_tmp_on_failure(tmp_path: Path, monkeypatch):
-    from neme_anima.server.api import sources as sources_mod
+    from neme_anima.server import video_ops as sources_mod
 
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg")
 
