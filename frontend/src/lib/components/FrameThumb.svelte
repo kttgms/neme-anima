@@ -61,8 +61,8 @@
   $effect(() => {
     void frame.filename;
     void frame.has_description;
-    void framesStore.retaggedVersion.get(frame.filename);
-    void framesStore.describedVersion.get(frame.filename);
+    void framesStore.retaggedVersion(frame.filename);
+    void framesStore.describedVersion(frame.filename);
     hasDescriptionLocal = null;
     tagText = null; // force a fresh tag fetch on next hover
   });
@@ -70,7 +70,7 @@
   // Frames currently in flight for a bulk re-tag / re-describe — render a
   // spinner overlay and swallow clicks so the user can't kick off a preview
   // or toggle selection on a tile that's actively being written to.
-  let processing = $derived(framesStore.processing.has(frame.filename));
+  let processing = $derived(framesStore.isProcessing(frame.filename));
 
   // One-shot pop animation on the description badge. Driven by a per-filename
   // version counter in framesStore that ActionBar bumps when a single-frame
@@ -84,7 +84,7 @@
 
   $effect(() => {
     const fn = frame.filename;
-    const v = framesStore.describedVersion.get(fn) ?? 0;
+    const v = framesStore.describedVersion(fn);
     if (lastSeenFilename !== fn) {
       // First run for this filename — capture baseline silently.
       lastSeenFilename = fn;

@@ -2,6 +2,17 @@ import * as api from "$lib/api";
 import { SelectionModel } from "$lib/selection";
 import type { FrameRecord, ServerEvent } from "$lib/types";
 
+/** Per-filename UI state the grid watches. `retagged`/`described` are
+ *  monotonic counters (not booleans) so re-tagging or re-describing an
+ *  already-processed frame still ticks — FrameThumb keys its cache-bust and
+ *  pop animation off an increase. `processing` is the in-flight flag for the
+ *  bulk spinner. */
+export type FrameState = {
+  retagged: number;
+  described: number;
+  processing: boolean;
+};
+
 class FramesStore {
   items = $state<FrameRecord[]>([]);
   // Unfiltered count for the current source/kept_only view — used by the
@@ -10,23 +21,27 @@ class FramesStore {
   loading = $state(false);
   selection = new SelectionModel();
   selectionVersion = $state(0); // bump to force reactivity for selection changes
-  // Per-filename counter bumped each time an LLM description finishes for a
-  // frame. FrameThumb watches its own filename's value and runs the badge-pop
-  // animation on every tick. We use a counter (not a boolean) so re-describing
-  // an already-described frame still triggers the animation as feedback.
-  describedVersion = $state<Map<string, number>>(new Map());
-  // Per-filename counter bumped each time a WD14 retag finishes for a frame.
-  // FrameThumb watches its own filename's value to invalidate its cached
-  // tagText so the next hover renders the freshly-tagged line. Same shape as
-  // describedVersion — a counter (not a boolean) so repeated retags keep
-  // invalidating the cache.
-  retaggedVersion = $state<Map<string, number>>(new Map());
-  // Filenames currently in flight for a bulk re-tag / re-describe action. The
-  // ActionBar populates this with the whole selection up-front so frames that
-  // haven't been reached yet still show a spinner (queued state), and clears
-  // each one as the per-frame call resolves. FrameThumb reads this to render
-  // a centered spinner overlay and absorb clicks while busy.
-  processing = $state<Set<string>>(new Set());
+  // One per-filename state map (was three separate Map/Set fields). Svelte 5's
+  // $state Map proxy tracks reads at the PER-KEY level — so a `set(fn, …)` only
+  // invalidates effects that read `.get(fn)`, not effects keyed to another
+  // filename. That is what lets FrameThumb cache-bust / pop a single tile
+  // without disturbing the frame the user is editing in the modal.
+  //
+  // TWO INVARIANTS keep that working (breaking either reintroduces the
+  // mid-edit TagPill-unmount bug fixed in commit 901aeaf):
+  //   1. Mutate by IMMUTABLE PER-KEY REPLACEMENT — `states.set(fn, {...prev})`.
+  //      Never mutate the stored object in place (`states.get(fn).retagged++`
+  //      won't trigger — the inner object isn't a tracked proxy), and never
+  //      reassign the whole map except the intentional reset in refresh().
+  //   2. refresh() reassigns `states = new Map()` to broadly invalidate on a
+  //      new view — coincidental filename reuse must not leak a stale counter
+  //      or a stranded spinner.
+  states = $state<Map<string, FrameState>>(new Map());
+
+  /** Current state for a filename, or the zero state if none recorded yet. */
+  #stateOf(filename: string): FrameState {
+    return this.states.get(filename) ?? { retagged: 0, described: 0, processing: false };
+  }
 
   async refresh(
     slug: string,
@@ -37,13 +52,10 @@ class FramesStore {
       const page = await api.listFrames(slug, opts);
       this.items = page.items;
       this.totalInView = page.total;
-      // Drop per-filename version maps and the in-flight set on refresh — a
-      // different filter or project could reuse filenames coincidentally, and
-      // we never want a stale bump or a stranded spinner to leak into a fresh
-      // view.
-      this.describedVersion = new Map();
-      this.retaggedVersion = new Map();
-      this.processing = new Set();
+      // Drop the per-filename state map on refresh — a different filter or
+      // project could reuse filenames coincidentally, and we never want a
+      // stale bump or a stranded spinner to leak into a fresh view.
+      this.states = new Map();
     } finally {
       this.loading = false;
     }
@@ -52,24 +64,22 @@ class FramesStore {
   /** Mark a frame as freshly described: flip its has_description and bump the
    *  per-filename counter so FrameThumb runs its pop animation.
    *
-   *  IMPORTANT: mutate the Map/Set state fields in place rather than
-   *  reassigning the field. Svelte 5's reactive Map proxy tracks reads at
+   *  IMPORTANT: mutate the states map by immutable per-key replacement rather
+   *  than reassigning the field. Svelte 5's reactive Map proxy tracks reads at
    *  the per-key level — so a `set(filename, …)` on this map only
    *  invalidates effects that read `.get(filename)`, not effects keyed to
-   *  some other filename. Reassigning the whole map (`this.describedVersion
-   *  = new Map(…)`) instead invalidates the field broadly, which then
-   *  re-runs every FrameThumb's tag-cache-busting effect — including the
-   *  one for the frame the user is currently editing. The user's TagPill
-   *  unmounts mid-edit and the in-progress text is lost. */
+   *  some other filename. Reassigning the whole map (`this.states = new Map(…)`)
+   *  instead invalidates the field broadly, which then re-runs every
+   *  FrameThumb's tag-cache-busting effect — including the one for the frame
+   *  the user is currently editing. The user's TagPill unmounts mid-edit and
+   *  the in-progress text is lost. */
   markDescribed(filename: string) {
     const idx = this.items.findIndex((i) => i.filename === filename);
     if (idx >= 0 && !this.items[idx].has_description) {
       this.items[idx] = { ...this.items[idx], has_description: true };
     }
-    this.describedVersion.set(
-      filename,
-      (this.describedVersion.get(filename) ?? 0) + 1,
-    );
+    const prev = this.#stateOf(filename);
+    this.states.set(filename, { ...prev, described: prev.described + 1 });
   }
 
   /** Bump a frame's retag counter so FrameThumb invalidates its tag cache.
@@ -79,10 +89,8 @@ class FramesStore {
     if (idx >= 0 && !this.items[idx].has_tags) {
       this.items[idx] = { ...this.items[idx], has_tags: true };
     }
-    this.retaggedVersion.set(
-      filename,
-      (this.retaggedVersion.get(filename) ?? 0) + 1,
-    );
+    const prev = this.#stateOf(filename);
+    this.states.set(filename, { ...prev, retagged: prev.retagged + 1 });
   }
 
   setSidecarFlags(
@@ -103,12 +111,30 @@ class FramesStore {
 
   /** Add filenames to the in-flight set so their tiles show a spinner. */
   markProcessing(filenames: Iterable<string>) {
-    for (const f of filenames) this.processing.add(f);
+    for (const f of filenames) {
+      this.states.set(f, { ...this.#stateOf(f), processing: true });
+    }
   }
 
-  /** Remove a single filename from the in-flight set (per-frame finish). */
+  /** Clear a single filename's in-flight flag (per-frame finish). */
   unmarkProcessing(filename: string) {
-    this.processing.delete(filename);
+    const prev = this.states.get(filename);
+    if (prev) this.states.set(filename, { ...prev, processing: false });
+  }
+
+  /** Monotonic retag counter for a filename (0 if never retagged). */
+  retaggedVersion(filename: string): number {
+    return this.states.get(filename)?.retagged ?? 0;
+  }
+
+  /** Monotonic describe counter for a filename (0 if never described). */
+  describedVersion(filename: string): number {
+    return this.states.get(filename)?.described ?? 0;
+  }
+
+  /** Whether a filename is currently in flight for a bulk action. */
+  isProcessing(filename: string): boolean {
+    return this.states.get(filename)?.processing ?? false;
   }
 
   /** Drop filenames from the selection without removing the underlying rows.
