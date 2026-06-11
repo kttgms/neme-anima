@@ -9,8 +9,8 @@
   import { connectEvents, type Connection } from "$lib/ws";
   import { setFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
   import { matchShortcut } from "$lib/shortcuts.svelte";
-  import * as api from "$lib/api";
   import { toasts } from "$lib/stores/toasts.svelte";
+  import { runBulkRetag, type BulkRetagActions } from "$lib/bulkRetag";
   import TopStrip from "$lib/components/TopStrip.svelte";
   import FramesTab from "$lib/components/FramesTab.svelte";
   import RegexModal from "$lib/components/RegexModal.svelte";
@@ -65,6 +65,21 @@
     frameOverwriteRequest = null;
     req.resolve(confirmed);
   }
+
+  const tagActions: BulkRetagActions = {
+    markProcessing: (f) => framesStore.markProcessing(f),
+    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
+    markDone: (f) => framesStore.markRetagged(f),
+    deselect: (f) => framesStore.deselect(f),
+    error: (m) => toasts.error(m),
+  };
+  const describeActions: BulkRetagActions = {
+    markProcessing: (f) => framesStore.markProcessing(f),
+    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
+    markDone: (f) => framesStore.markDescribed(f),
+    deselect: (f) => framesStore.deselect(f),
+    error: (m) => toasts.error(m),
+  };
 
   onMount(async () => {
     await projectsStore.refresh();
@@ -124,10 +139,6 @@
     ev.preventDefault();
   }
 
-  // Keyboard `t` / `s`: same effect as ActionBar's Tag / Describe chips, but
-  // reachable without the selection pill in view. They reuse the App-owned
-  // overwrite confirm and the per-frame loop (one frame at a time → per-frame
-  // badge feedback; failed frames stay selected as a retry hint).
   async function bulkTagSelection() {
     const slug = projectsStore.active?.slug;
     if (!slug) return;
@@ -142,29 +153,7 @@
     ) {
       return;
     }
-    framesStore.markProcessing(filenames);
-    let succeeded = 0;
-    for (const filename of filenames) {
-      try {
-        const res = await api.bulkRetagDanbooru(slug, [filename]);
-        if (res.retagged > 0) {
-          framesStore.markRetagged(filename);
-          framesStore.deselect([filename]);
-          succeeded += 1;
-        }
-      } catch {
-        /* failed frame stays selected as the retry hint */
-      } finally {
-        framesStore.unmarkProcessing(filename);
-      }
-    }
-    const failed = filenames.length - succeeded;
-    if (failed > 0) {
-      toasts.error(
-        `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
-          "failed to tag — they stay selected so you can retry.",
-      );
-    }
+    await runBulkRetag("tag", slug, filenames, tagActions);
   }
 
   async function bulkDescribeSelection() {
@@ -185,30 +174,7 @@
     ) {
       return;
     }
-    framesStore.markProcessing(filenames);
-    let succeeded = 0;
-    for (const filename of filenames) {
-      try {
-        const res = await api.bulkRetagLLM(slug, [filename]);
-        if (res.described > 0) {
-          const eff = res.effective_filenames?.[0] ?? filename;
-          framesStore.markDescribed(eff);
-          framesStore.deselect([filename]);
-          succeeded += 1;
-        }
-      } catch {
-        /* failed frame stays selected as the retry hint */
-      } finally {
-        framesStore.unmarkProcessing(filename);
-      }
-    }
-    const failed = filenames.length - succeeded;
-    if (failed > 0) {
-      toasts.error(
-        `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
-          "failed to describe — they stay selected so you can retry.",
-      );
-    }
+    await runBulkRetag("describe", slug, filenames, describeActions);
   }
 </script>
 
