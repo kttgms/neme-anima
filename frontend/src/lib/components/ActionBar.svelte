@@ -7,6 +7,7 @@
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
   import { getFrameOverwriteConfirm } from "$lib/frameOverwriteContext";
+  import { runBulkRetag, type BulkRetagActions } from "$lib/bulkRetag";
 
   type Props = {
     onopenRegex: () => void;
@@ -135,6 +136,23 @@
 
   let retagBusy = $state(false);
 
+  // Adapter objects bind the shared runner to this app's stores. The only
+  // per-kind difference is which cache-version map gets bumped on success.
+  const tagActions: BulkRetagActions = {
+    markProcessing: (f) => framesStore.markProcessing(f),
+    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
+    markDone: (f) => framesStore.markRetagged(f),
+    deselect: (f) => framesStore.deselect(f),
+    error: (m) => toasts.error(m),
+  };
+  const describeActions: BulkRetagActions = {
+    markProcessing: (f) => framesStore.markProcessing(f),
+    unmarkProcessing: (f) => framesStore.unmarkProcessing(f),
+    markDone: (f) => framesStore.markDescribed(f),
+    deselect: (f) => framesStore.deselect(f),
+    error: (m) => toasts.error(m),
+  };
+
   function selectedItems(filenames: string[]): FrameRecord[] {
     const selected = new Set(filenames);
     return framesStore.items.filter((it) => selected.has(it.filename));
@@ -175,43 +193,10 @@
 
   async function runRetagDanbooru(slug: string, filenames: string[]) {
     retagBusy = true;
-    // Mark every selected frame as in-flight up-front so tiles that haven't
-    // been reached yet still show a spinner (queued state). Each per-frame
-    // call clears its own filename when it resolves and the frame is
-    // deselected — a successful frame visibly drains out of the selection
-    // pill while failures stay selected as a retry hint.
-    framesStore.markProcessing(filenames);
-    let succeeded = 0;
     try {
-      for (const filename of filenames) {
-        try {
-          const res = await api.bulkRetagDanbooru(slug, [filename]);
-          const ok = res.retagged > 0;
-          if (ok) {
-            // Bust the thumb's tagText cache so the next hover reads the
-            // freshly-tagged line. The FrameRecord doesn't change for a
-            // retag (only the on-disk .txt does), so the thumb wouldn't
-            // otherwise know to refetch.
-            framesStore.markRetagged(filename);
-            framesStore.deselect([filename]);
-            succeeded += 1;
-          }
-        } catch {
-          // Swallow per-frame errors and let the failed frame stay selected
-          // as the retry hint — the summary toast below covers visibility.
-        } finally {
-          framesStore.unmarkProcessing(filename);
-        }
-      }
+      await runBulkRetag("tag", slug, filenames, tagActions);
     } finally {
       retagBusy = false;
-      const failed = filenames.length - succeeded;
-      if (failed > 0) {
-        toasts.error(
-          `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
-          "failed to tag — they stay selected so you can retry.",
-        );
-      }
     }
   }
 
@@ -232,43 +217,10 @@
 
   async function runRetagLLM(slug: string, filenames: string[]) {
     retagBusy = true;
-    // Same up-front spinner-marking pattern as retagDanbooru: every selected
-    // frame is "queued" from the user's perspective the moment they click
-    // Describe, even if the per-frame call hasn't been issued yet.
-    framesStore.markProcessing(filenames);
-    // Process one frame at a time so the user gets per-frame feedback (badge
-    // pop) as descriptions are written, and so each LLM call uses a fresh
-    // chat-completions context (no carry-over between images).
-    let succeeded = 0;
     try {
-      for (const filename of filenames) {
-        try {
-          const res = await api.bulkRetagLLM(slug, [filename]);
-          if (res.described > 0) {
-            // The backend silently retargets to a `_crop` derivative when
-            // one exists, so pop the badge on the row that actually got
-            // written rather than the one the user clicked.
-            const eff = res.effective_filenames?.[0] ?? filename;
-            framesStore.markDescribed(eff);
-            framesStore.deselect([filename]);
-            succeeded += 1;
-          }
-        } catch {
-          // Swallow per-frame errors and let the failed frame stay selected
-          // as the retry hint — the summary toast below covers visibility.
-        } finally {
-          framesStore.unmarkProcessing(filename);
-        }
-      }
+      await runBulkRetag("describe", slug, filenames, describeActions);
     } finally {
       retagBusy = false;
-      const failed = filenames.length - succeeded;
-      if (failed > 0) {
-        toasts.error(
-          `${failed} of ${filenames.length} frame${filenames.length === 1 ? "" : "s"} ` +
-          "failed to describe — they stay selected so you can retry.",
-        );
-      }
     }
   }
 
