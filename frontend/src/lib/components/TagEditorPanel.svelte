@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import * as api from "$lib/api";
   import { createAsyncLoad } from "$lib/composables/asyncLoad.svelte";
   import { createFlash } from "$lib/composables/flash.svelte";
@@ -60,13 +60,18 @@
 
   // Reset the "copied" latch whenever the surfaced selection changes.
   function onSelectionChange(next: string[]) {
-    // Equal-length-and-content check avoids resetting `copied` on a no-op
-    // re-emit (e.g. the tags array changing identity but the selection not).
+    // TagList's surfacing $effect re-emits a FRESH array on every one of its
+    // runs (its `selectedTags` is `tags.filter(...)`). We must bail on an
+    // equal selection WITHOUT writing `selectedTags` — assigning a new array
+    // identity here would re-render this panel, re-run TagList's effect, and
+    // loop forever (effect_update_depth_exceeded). Only a genuine content
+    // change updates state.
     const changed =
       next.length !== selectedTags.length ||
       next.some((t, i) => t !== selectedTags[i]);
+    if (!changed) return;
     selectedTags = next;
-    if (changed) copied = false;
+    copied = false;
   }
 
   function copySelection() {
@@ -86,12 +91,22 @@
   reportDirty(() => dirty, () => ondirty);
 
   // Reload whenever the displayed frame changes (arrow-key nav in the modal).
+  // This effect must depend on `filename` ONLY. Everything in the body is a
+  // write or imperative call, wrapped in untrack() so it isn't a tracked read:
+  //   - `clearTagSelection?.()` reads the `bind:clearSelection` $state, whose
+  //     function identity TagList rewrites on every render. `load(fn)` reassigns
+  //     `tags`, TagList re-renders, `clearSelection` gets a fresh identity, the
+  //     binding pushes it back here — and if that read were tracked it would
+  //     re-fire this effect → reload → re-render → new identity → infinite
+  //     `GET .../tags` loop (the P3 regression). untrack() severs that.
   $effect(() => {
     const fn = filename;
-    reviewResult = null; // discard stale suggestions for the previous frame
-    copied = false;
-    clearTagSelection?.(); // selection is per-frame
-    void load(fn);
+    untrack(() => {
+      reviewResult = null; // discard stale suggestions for the previous frame
+      copied = false;
+      clearTagSelection?.(); // selection is per-frame
+      void load(fn);
+    });
   });
 
   async function load(fn: string) {

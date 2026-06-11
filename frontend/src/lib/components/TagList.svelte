@@ -43,6 +43,11 @@
   let selectedTags = $derived(tags.filter((t) => selected.has(t)));
 
   // Surface the selection to the parent whenever it (or the tag list) changes.
+  // `selectedTags` is a fresh array on every recompute, so the parent's
+  // `onselectionchange` handler MUST treat an equal selection as a no-op
+  // (no state write) — otherwise this effect → parent write → effect re-run
+  // forms an infinite update loop (effect_update_depth_exceeded). See the
+  // guard in TagEditorPanel.onSelectionChange.
   $effect(() => {
     if (selectable) onselectionchange?.(selectedTags);
   });
