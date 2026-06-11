@@ -44,6 +44,27 @@
   .toggle-chip[disabled] {
     @apply opacity-40 cursor-not-allowed;
   }
+
+  /* The disabled state shared by every action button in the app: dim it and
+     show the not-allowed cursor. Defined once so the 13 buttons that need it
+     don't each repeat the literal `disabled:opacity-40
+     disabled:cursor-not-allowed` pair. Generated CSS is identical to those
+     utilities — purely a de-duplication, no visual change. */
+  .btn-disabled {
+    @apply disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  /* Action-button colour palette (documentation — these are applied inline as
+     Tailwind classes on each button, NOT as a shared class, because each
+     button also carries its own size/shape utilities):
+       delete      → red    (destructive; conventional warning hue)
+       regex       → amber  (text-transform on the tag line)
+       tag (WD14)  → emerald (write/rewrite from a model)
+       describe    → teal   (also model-driven; sibling hue to emerald)
+       characters  → fuchsia (reassign / also-assign)
+     Keep new action buttons on this mapping so the UI stays legible at a
+     glance. Per-character chip colours are a SEPARATE palette — see
+     lib/characterColors.ts. */
 }
 
 @keyframes badge-pop {

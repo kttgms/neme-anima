@@ -392,7 +392,7 @@
       type="button"
       onclick={toggleSelectAll}
       disabled={total === 0}
-      class="h-7 px-3 rounded-full text-xs bg-ink-900 border border-ink-700 text-slate-300 hover:bg-ink-800 hover:text-slate-100 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center"
+      class="h-7 px-3 rounded-full text-xs bg-ink-900 border border-ink-700 text-slate-300 hover:bg-ink-800 hover:text-slate-100 btn-disabled inline-flex items-center"
     >{allSelected ? "Deselect all" : "Select all"}</button>
 
     <span

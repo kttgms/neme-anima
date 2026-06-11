@@ -58,6 +58,6 @@
     type="button"
     onclick={onadd}
     disabled={duration <= 0}
-    class="text-xs text-indigo-300 hover:text-indigo-200 px-1 disabled:opacity-40 disabled:cursor-not-allowed"
+    class="text-xs text-indigo-300 hover:text-indigo-200 px-1 btn-disabled"
   >+ Add segment at playhead</button>
 </div>

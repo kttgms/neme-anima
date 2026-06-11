@@ -241,7 +241,7 @@
         type="button"
         onclick={apply}
         disabled={!pattern || preview.length === 0 || applying}
-        class="px-4 py-2 text-xs rounded gradient-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-4 py-2 text-xs rounded gradient-accent text-white btn-disabled"
       >{applying ? "Applying…" : `Apply to ${filenames.length}`}</button>
     </div>
   </div>

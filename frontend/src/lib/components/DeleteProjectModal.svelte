@@ -82,7 +82,7 @@
       disabled={!confirmable}
       onclick={handleConfirm}
       class="px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-500
-             text-white disabled:opacity-40 disabled:cursor-not-allowed
+             text-white btn-disabled
              shadow-[0_2px_8px_rgba(220,38,38,0.3)]"
     >{busy ? "Deleting…" : "Delete project + files"}</button>
   {/snippet}

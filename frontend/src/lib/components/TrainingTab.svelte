@@ -93,7 +93,7 @@
           type="button"
           onclick={() => continueRun(resumableRun?.name)}
           disabled={!canResume || busy}
-          class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-100 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-100 border border-ink-700 btn-disabled"
           title={canResume
             ? `Continue ${resumableRun?.name} from epoch ${resumableRun?.latest_epoch ?? "?"}`
             : !resumableRun
@@ -106,7 +106,7 @@
           type="button"
           onclick={doStart}
           disabled={!canStart || busy}
-          class="px-4 py-1.5 text-xs rounded gradient-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          class="px-4 py-1.5 text-xs rounded gradient-accent text-white btn-disabled"
           title={canStart ? "Start a new training run" : (problems[0] ?? "Provide all model paths first")}
         >{busy ? "Starting…" : "Start training"}</button>
       {/if}

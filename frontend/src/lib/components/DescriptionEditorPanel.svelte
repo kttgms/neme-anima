@@ -143,14 +143,14 @@
         onclick={describeNow}
         disabled={loader.loading || saving || describing}
         title="Run the LLM describer on this frame (preserves the tags)"
-        class="px-4 py-1.5 text-xs rounded bg-teal-600 hover:bg-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-4 py-1.5 text-xs rounded bg-teal-600 hover:bg-teal-500 text-white btn-disabled"
       >{describing ? "Describing…" : "Describe"}</button>
     {/if}
     <button
       type="button"
       onclick={save}
       disabled={loader.loading || saving || !dirty}
-      class="px-4 py-1.5 text-xs rounded gradient-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-4 py-1.5 text-xs rounded gradient-accent text-white btn-disabled"
     >{saving ? "Saving…" : "Save description"}</button>
   </div>
 </div>

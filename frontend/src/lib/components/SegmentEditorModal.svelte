@@ -545,7 +545,7 @@
         type="button"
         onclick={save}
         disabled={saving || !valid}
-        class="px-3 py-1.5 text-xs rounded gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)] disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-3 py-1.5 text-xs rounded gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)] btn-disabled"
       >{saving ? "Saving…" : "Save"}</button>
     </div>
   </div>

@@ -350,7 +350,7 @@
             type="button"
             onclick={applyReview}
             disabled={acceptedCount === 0}
-            class="px-3 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            class="px-3 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white btn-disabled"
           >Apply {acceptedCount} change{acceptedCount === 1 ? "" : "s"}</button>
         </div>
       {/if}
@@ -372,7 +372,7 @@
         title={copied
           ? "Copied — select or deselect a tag to copy again"
           : `Copy the ${selectedTags.length} selected tag${selectedTags.length === 1 ? "" : "s"} to the clipboard`}
-        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white btn-disabled"
       >{copied ? "Copied ✓" : `Copy ${selectedTags.length}`}</button>
       <button
         type="button"
@@ -389,7 +389,7 @@
           type="button"
           onclick={pasteClipboard}
           disabled={loader.loading || pasteTags.length === 0}
-          class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white btn-disabled"
         >Paste {pasteTags.length}</button>
         <div
           class="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-20 hidden group-hover:block"
@@ -417,7 +417,7 @@
         onclick={reviewNow}
         disabled={loader.loading || saving || tagging || reviewing}
         title="Ask the LLM to review these tags against the image (proposes removals and additions)"
-        class="px-4 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-4 py-1.5 text-xs rounded bg-violet-600 hover:bg-violet-500 text-white btn-disabled"
       >{reviewing ? "Reviewing…" : "Review"}</button>
     {/if}
     <button
@@ -425,13 +425,13 @@
       onclick={retagNow}
       disabled={loader.loading || saving || tagging}
       title="Re-run the WD14 tagger on this frame (preserves the description)"
-      class="px-4 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-4 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white btn-disabled"
     >{tagging ? "Tagging…" : "Tag"}</button>
     <button
       type="button"
       onclick={save}
       disabled={loader.loading || saving || !dirty}
-      class="px-4 py-1.5 text-xs rounded gradient-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-4 py-1.5 text-xs rounded gradient-accent text-white btn-disabled"
     >{saving ? "Saving…" : "Save tags"}</button>
   </div>
 </div>

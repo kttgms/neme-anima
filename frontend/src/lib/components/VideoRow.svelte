@@ -345,7 +345,7 @@
       disabled={extractDisabled}
       title={extractTooltip}
       class="px-3 py-1.5 text-xs rounded inline-flex items-center gap-1
-        disabled:opacity-40 disabled:cursor-not-allowed
+        btn-disabled
         {extractPrimary
           ? 'gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)]'
           : 'bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700'}"
@@ -362,7 +362,7 @@
       onclick={rerun}
       disabled={rerunDisabled}
       title={rerunTooltip}
-      class="px-3 py-1.5 text-xs rounded inline-flex items-center disabled:opacity-40 disabled:cursor-not-allowed
+      class="px-3 py-1.5 text-xs rounded inline-flex items-center btn-disabled
         {rerunPrimary
           ? 'gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)]'
           : 'bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700'}"

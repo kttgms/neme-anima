@@ -321,14 +321,14 @@
       onclick={() => onseekby(-5)}
       disabled={duration <= 0}
       title="Back 5 seconds (←)"
-      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed tabular-nums"
+      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 btn-disabled tabular-nums"
     >« 5s</button>
     <button
       type="button"
       onclick={() => onstepframe(-1)}
       disabled={duration <= 0}
       title="Previous frame — pauses (,)"
-      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 btn-disabled"
     >‹ frame</button>
     <button
       type="button"
@@ -336,21 +336,21 @@
       disabled={duration <= 0}
       title="Play / pause (Space or K)"
       aria-label={paused ? "Play" : "Pause"}
-      class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-200 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed w-9"
+      class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-200 border border-ink-700 btn-disabled w-9"
     >{paused ? "▶" : "⏸"}</button>
     <button
       type="button"
       onclick={() => onstepframe(1)}
       disabled={duration <= 0}
       title="Next frame — pauses (.)"
-      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 btn-disabled"
     >frame ›</button>
     <button
       type="button"
       onclick={() => onseekby(5)}
       disabled={duration <= 0}
       title="Forward 5 seconds (→)"
-      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed tabular-nums"
+      class="px-2 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300 border border-ink-700 btn-disabled tabular-nums"
     >5s »</button>
   </div>
 
@@ -379,7 +379,7 @@
       onclick={oncapture}
       disabled={duration <= 0 || capturing}
       title="Capture the current frame at full resolution and tag it (C)"
-      class="px-3 py-1.5 text-xs rounded inline-flex items-center gap-1.5 gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)] disabled:opacity-40 disabled:cursor-not-allowed"
+      class="px-3 py-1.5 text-xs rounded inline-flex items-center gap-1.5 gradient-accent text-white shadow-[0_2px_8px_rgba(99,102,241,0.3)] btn-disabled"
     >
       <span aria-hidden="true">📷</span>
       {capturing ? "Capturing…" : "Capture frame"}

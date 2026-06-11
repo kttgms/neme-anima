@@ -74,7 +74,7 @@
         type="button"
         onclick={create}
         disabled={!name || !folder || creating}
-        class="px-4 py-2 text-xs rounded gradient-accent text-white disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-4 py-2 text-xs rounded gradient-accent text-white btn-disabled"
       >{creating ? "Creating…" : "Create"}</button>
     </div>
   </div>

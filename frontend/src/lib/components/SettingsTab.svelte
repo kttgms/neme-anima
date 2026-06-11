@@ -469,7 +469,7 @@
         type="button"
         onclick={discoverLLMModels}
         disabled={llmDiscovering || !llmEndpoint.trim()}
-        class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-200 border border-ink-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        class="px-3 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-200 border border-ink-700 btn-disabled"
       >{llmDiscovering ? "Probing…" : "Discover models"}</button>
     </div>
 

@@ -385,7 +385,7 @@
                         type="button"
                         onclick={() => oncontinue(r.name)}
                         disabled={busy || problems.length > 0 || !room}
-                        class="px-2.5 py-1 text-[11px] rounded bg-accent-700 hover:bg-accent-600 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                        class="px-2.5 py-1 text-[11px] rounded bg-accent-700 hover:bg-accent-600 text-white btn-disabled"
                         title={room
                           ? "Continue training from this run's last saved state"
                           : `Already at epoch ${r.latest_epoch} / ${cfg?.epochs} — raise 'epochs' in Settings to continue`}
