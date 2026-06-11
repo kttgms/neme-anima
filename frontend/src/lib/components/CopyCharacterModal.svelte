@@ -1,6 +1,6 @@
 <script lang="ts">
   import * as api from "$lib/api";
-  import type { CharacterView } from "$lib/types";
+  import type { CharacterCopyReport, CharacterView } from "$lib/types";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { focusTrap } from "$lib/actions/focusTrap";
 
@@ -22,7 +22,7 @@
     }
   });
 
-  let preview = $state<api.CharacterCopyReport | null>(null);
+  let preview = $state<CharacterCopyReport | null>(null);
   let busyAction = $state<"preview" | "copy" | null>(null);
   let busy = $derived(busyAction !== null);
   let error = $state<string | null>(null);

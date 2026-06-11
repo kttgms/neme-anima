@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "$lib/api";
+  import type { CoreTagsReport } from "$lib/types";
   import { colorForIndex } from "$lib/characterColors";
   import { projectsStore } from "$lib/stores/projects.svelte";
   let project = $derived(projectsStore.active);
@@ -41,7 +42,7 @@
     }, 350);
   }
 
-  let coreTagsReport = $state<api.CoreTagsReport | null>(null);
+  let coreTagsReport = $state<CoreTagsReport | null>(null);
   let coreTagsLoading = $state(false);
 
   async function runCoreTagsCompute() {

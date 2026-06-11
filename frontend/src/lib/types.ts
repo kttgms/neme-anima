@@ -328,3 +328,71 @@ export interface TrainingTomlPreview {
   run_toml: string;
   launcher_argv: string[];
 }
+
+export type ConvertMode = "remux" | "h264";
+
+export interface ConvertStatus {
+  state: "idle" | "running" | "ready" | "failed";
+  pct: number;
+  mode: ConvertMode;
+  error: string;
+}
+
+export interface WipePreview {
+  video_stem: string;
+  active_slugs: string[];
+  preserve_slugs: string[];
+  to_wipe: {
+    by_character: Record<string, number>;
+    rejected_samples: number;
+    total: number;
+  };
+  to_preserve: {
+    by_character: Record<string, number>;
+    total: number;
+  };
+}
+
+export type CoreTagsReport = {
+  character_slug: string;
+  corpus_size: number;
+  threshold: number;
+  tags: { tag: string; freq: number }[];
+  blacklisted: string[];
+};
+
+export type CharacterCopyReport = {
+  character_slug: string;
+  sources_added: string[];
+  sources_skipped: string[];
+  refs_added: string[];
+  refs_renamed: Record<string, string>;
+  frames_added: string[];
+  frames_skipped: string[];
+  custom_uploads_added: number;
+  crops_copied: number;
+  metadata_rows_appended: number;
+  dry_run: boolean;
+};
+
+/** A {tag, reason} suggestion from the LLM tag-review pass. */
+export interface TagReviewItem {
+  tag: string;
+  reason: string;
+}
+
+/** The reconciled, applyable diff the review endpoint returns. */
+export interface TagReview {
+  /** Existing tags retained (existing minus accepted removals). */
+  keep: string[];
+  /** Existing tags the model flagged for removal, with reasons. */
+  remove: TagReviewItem[];
+  /** New, canonicalized danbooru tags to add, with reasons. */
+  add: TagReviewItem[];
+  /** keep + add — the list if every suggestion is accepted. */
+  proposed_final: string[];
+  /** Human-readable notes on what reconciliation dropped/normalized. */
+  notes: string[];
+  /** The filename the review actually targeted (the crop, when one exists). */
+  effective_filename: string;
+}

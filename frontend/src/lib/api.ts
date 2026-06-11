@@ -1,9 +1,10 @@
 import type {
-  CharacterView, FrameRecord, FramesPage, LLMConfig,
+  CharacterCopyReport, CharacterView, ConvertMode, ConvertStatus,
+  CoreTagsReport, FrameRecord, FramesPage, LLMConfig,
   ProjectListEntry, ProjectView, QueueItem, Segment,
-  TrainingConfig, TrainingConfigResponse, TrainingStatus, TrainingRun,
-  TrainingCheckpoint, TrainingDatasetPreview, TrainingPathCheck,
-  TrainingLogResponse, TrainingTomlPreview,
+  TagReview, TagReviewItem, TrainingConfig, TrainingConfigResponse,
+  TrainingStatus, TrainingRun, TrainingCheckpoint, TrainingDatasetPreview,
+  TrainingPathCheck, TrainingLogResponse, TrainingTomlPreview, WipePreview,
 } from "./types";
 
 /** Server-side sentinel for the Frames-tab "unsorted" filter. Mirrors the
@@ -101,15 +102,6 @@ export const sourceThumbnailUrl = (slug: string, idx: number) =>
 export const sourceStreamUrl = (slug: string, idx: number) =>
   `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/stream`;
 
-export type ConvertMode = "remux" | "h264";
-
-export interface ConvertStatus {
-  state: "idle" | "running" | "ready" | "failed";
-  pct: number;
-  mode: ConvertMode;
-  error: string;
-}
-
 /** URL of a converted, web-playable MP4 for the given mode. The file is
  *  produced by {@link convertSource}; this URL only serves it (404 until
  *  conversion has run). `remux` is a lossless HEVC rewrap, `h264` a 480p
@@ -197,21 +189,6 @@ export const rerunSource = (slug: string, idx: number) =>
     { method: "POST" },
   );
 
-export interface WipePreview {
-  video_stem: string;
-  active_slugs: string[];
-  preserve_slugs: string[];
-  to_wipe: {
-    by_character: Record<string, number>;
-    rejected_samples: number;
-    total: number;
-  };
-  to_preserve: {
-    by_character: Record<string, number>;
-    total: number;
-  };
-}
-
 export const sourceWipePreview = (slug: string, idx: number) =>
   request<WipePreview>(
     `/api/projects/${encodeURIComponent(slug)}/sources/${idx}/wipe-preview`,
@@ -285,14 +262,6 @@ export const updateCharacter = (
     { method: "PATCH", body: JSON.stringify(body) },
   );
 
-export type CoreTagsReport = {
-  character_slug: string;
-  corpus_size: number;
-  threshold: number;
-  tags: { tag: string; freq: number }[];
-  blacklisted: string[];
-};
-
 export const computeCharacterCoreTags = (
   slug: string,
   characterSlug: string,
@@ -302,20 +271,6 @@ export const computeCharacterCoreTags = (
     `/api/projects/${encodeURIComponent(slug)}/characters/${encodeURIComponent(characterSlug)}/core-tags/compute`,
     { method: "POST", body: JSON.stringify(body) },
   );
-
-export type CharacterCopyReport = {
-  character_slug: string;
-  sources_added: string[];
-  sources_skipped: string[];
-  refs_added: string[];
-  refs_renamed: Record<string, string>;
-  frames_added: string[];
-  frames_skipped: string[];
-  custom_uploads_added: number;
-  crops_copied: number;
-  metadata_rows_appended: number;
-  dry_run: boolean;
-};
 
 export const copyCharacterToProject = (
   slug: string,
@@ -475,28 +430,6 @@ export const bulkRetagLLM = (slug: string, filenames: string[]) =>
     `/api/projects/${encodeURIComponent(slug)}/frames/bulk-retag-llm`,
     { method: "POST", body: JSON.stringify({ filenames }) },
   );
-
-/** A {tag, reason} suggestion from the LLM tag-review pass. */
-export interface TagReviewItem {
-  tag: string;
-  reason: string;
-}
-
-/** The reconciled, applyable diff the review endpoint returns. */
-export interface TagReview {
-  /** Existing tags retained (existing minus accepted removals). */
-  keep: string[];
-  /** Existing tags the model flagged for removal, with reasons. */
-  remove: TagReviewItem[];
-  /** New, canonicalized danbooru tags to add, with reasons. */
-  add: TagReviewItem[];
-  /** keep + add — the list if every suggestion is accepted. */
-  proposed_final: string[];
-  /** Human-readable notes on what reconciliation dropped/normalized. */
-  notes: string[];
-  /** The filename the review actually targeted (the crop, when one exists). */
-  effective_filename: string;
-}
 
 /** Ask the LLM to review one frame's tags against its (cropped) image. */
 export const reviewTags = (slug: string, filename: string) =>

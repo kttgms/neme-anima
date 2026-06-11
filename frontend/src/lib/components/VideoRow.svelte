@@ -1,6 +1,6 @@
 <script lang="ts">
   import * as api from "$lib/api";
-  import type { WipePreview } from "$lib/api";
+  import type { WipePreview } from "$lib/types";
   import { colorForIndex } from "$lib/characterColors";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { jobsStore } from "$lib/stores/jobs.svelte";
@@ -63,7 +63,7 @@
    *  whether to prompt — they're diagnostic, not curation, and a
    *  popup that says "we'll delete some rejected samples" would just
    *  be friction with no upside. */
-  function keptFramesToWipe(preview: api.WipePreview): number {
+  function keptFramesToWipe(preview: WipePreview): number {
     return Object.values(preview.to_wipe.by_character).reduce(
       (a, b) => a + b, 0,
     );

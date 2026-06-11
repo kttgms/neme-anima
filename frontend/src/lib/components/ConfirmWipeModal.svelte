@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { WipePreview } from "$lib/api";
+  import type { WipePreview } from "$lib/types";
   import { projectsStore } from "$lib/stores/projects.svelte";
   import { focusTrap } from "$lib/actions/focusTrap";
 

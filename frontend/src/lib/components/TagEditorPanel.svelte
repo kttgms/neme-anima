@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
   import * as api from "$lib/api";
+  import type { TagReview } from "$lib/types";
   import { createAsyncLoad } from "$lib/composables/asyncLoad.svelte";
   import { createFlash } from "$lib/composables/flash.svelte";
   import { reportDirty } from "$lib/composables/reportDirty.svelte";
@@ -38,7 +39,7 @@
 
   // ---- LLM tag review (staged: applies into `tags`, not the server) ----
   let reviewing = $state(false);
-  let reviewResult = $state<api.TagReview | null>(null);
+  let reviewResult = $state<TagReview | null>(null);
   // Which suggested removals/additions are currently checked. Keyed by tag
   // text; default all-checked when a review arrives.
   let acceptRemove = $state<Set<string>>(new Set());
