@@ -45,10 +45,11 @@
   let acceptRemove = $state<Set<string>>(new Set());
   let acceptAdd = $state<Set<string>>(new Set());
 
-  // ---- middle-click tag selection (surfaced from TagList; staging-only) ----
-  // TagList owns the selection ring; it reports the selected subset here so we
-  // can render the Copy/Unselect/Paste buttons. We hold an imperative clear
-  // that TagList binds, so Copy/Unselect can reset the ring.
+  // ---- tag selection (surfaced from TagList; staging-only) ----
+  // TagList owns the selection ring (left-click / Ctrl/Cmd / Shift) and reports
+  // the selected subset here so we can render the Copy/Paste buttons. We hold an
+  // imperative clear that TagList binds, used after a save / retag / review
+  // replaces the tag set (the editor itself clears on click-away / Esc).
   let selectedTags = $state<string[]>([]);
   let clearTagSelection = $state<(() => void) | undefined>(undefined);
   // True once the current selection has been copied; Copy stays disabled until
@@ -79,9 +80,6 @@
     if (selectedTags.length === 0 || copied) return;
     tagClipboard.set(selectedTags); // order-preserving; keeps selection intact
     copied = true;
-  }
-  function clearSelection() {
-    clearTagSelection?.();
   }
   function pasteClipboard() {
     if (tagClipboard.size === 0) return;
@@ -366,8 +364,8 @@
 
   <div class="flex justify-end gap-2">
     {#if selectedTags.length > 0}
-      <!-- A tag selection exists (middle-click): copy it to the clipboard, or
-           clear the selection. -->
+      <!-- A tag selection exists: copy it to the clipboard. (Clearing the
+           selection is handled in the editor itself — click-away / Esc.) -->
       <button
         type="button"
         onclick={copySelection}
@@ -377,12 +375,6 @@
           : `Copy the ${selectedTags.length} selected tag${selectedTags.length === 1 ? "" : "s"} to the clipboard`}
         class="px-4 py-1.5 text-xs rounded bg-sky-600 hover:bg-sky-500 text-white btn-disabled"
       >{copied ? "Copied ✓" : `Copy ${selectedTags.length}`}</button>
-      <button
-        type="button"
-        onclick={clearSelection}
-        title="Clear the tag selection"
-        class="px-4 py-1.5 text-xs rounded bg-ink-800 hover:bg-ink-700 text-slate-300"
-      >Unselect</button>
     {:else if tagClipboard.size > 0}
       <!-- Nothing selected here but the clipboard holds tags from another frame:
            offer to append them (deduped) to this frame's tags. Hovering the
