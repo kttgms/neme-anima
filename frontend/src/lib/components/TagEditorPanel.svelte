@@ -179,6 +179,7 @@
       const res = await api.bulkRetagDanbooru(slug, [filename]);
       if (res.retagged > 0) {
         await load(filename);
+        clearTagSelection?.(); // tag set replaced — stale index selection
         framesStore.markRetagged(filename);
         framesStore.setSidecarFlags(filename, { has_tags: savedTags.length > 0 });
       }
@@ -229,6 +230,7 @@
       if (acceptAdd.has(a.tag)) next.push(a.tag);
     }
     tags = dedupe(next);
+    clearTagSelection?.(); // working list changed — stale index selection
     reviewResult = null;
   }
 
