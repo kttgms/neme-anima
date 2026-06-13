@@ -80,6 +80,9 @@
   let anchor: number | null = null;
   let pressRef: { index: number; inSel: boolean; sole: boolean } | null = null;
   let didDrag = false;
+  // Reactive mirror of "a drag is in progress", used only for the drag-ghost
+  // opacity in the template (didDrag stays non-reactive — it is a click latch).
+  let dragging = $state(false);
   let gesture: { mode: "pending" | "move"; startX: number; startY: number; dragIndex: number } | null = null;
 
   const DRAG_THRESHOLD = 4; // px before a press becomes a drag
@@ -104,6 +107,7 @@
   // is why the parent reads it under untrack() in its per-filename reload effect.
   clearSelection = () => {
     selected = new Set();
+    anchor = null;
   };
 
   // Click-away OUTSIDE the editor clears the selection. Attached only while
@@ -148,6 +152,7 @@
       if (dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD) return;
       g.mode = "move";
       didDrag = true;
+      dragging = true;
     }
     if (g.mode === "move") dropIndex = computeDrop(e.clientX, e.clientY);
   }
@@ -170,6 +175,7 @@
   }
   function endGesture() {
     gesture = null;
+    dragging = false;
     dropIndex = null;
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", onPointerUp);
@@ -178,6 +184,8 @@
   // Select on pointer-down so the pressed pill is the visible subject of a drag.
   function onPillPointerDown(index: number, e: PointerEvent) {
     if (e.button !== 0 || editingIndex === index) return;
+    // Focus first: this blurs any editing pill so its blur-commit runs BEFORE
+    // we overwrite the selection below (otherwise the commit would clear it).
     containerEl?.focus();
     if (e.metaKey || e.ctrlKey) {
       const next = new Set(selected);
@@ -285,11 +293,14 @@
       selected = new Set(tags.map((_, i) => i));
       return;
     }
-    if (selected.size === 0) return;
-    const sel = [...selected].sort((a, b) => a - b);
+    // Bound to in-range indices: a selection can outlive a parent list-shrink
+    // (apply-review / paste) that didn't clear it — never map a stale index.
+    const sel = [...selected].filter((i) => i >= 0 && i < tags.length).sort((a, b) => a - b);
+    if (sel.length === 0) return;
+    const selSet = new Set(sel);
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
-      onchange(tags.filter((_, i) => !selected.has(i)));
+      onchange(tags.filter((_, i) => !selSet.has(i)));
       selected = new Set();
     } else if (mod && k === "c") {
       e.preventDefault();
@@ -297,7 +308,7 @@
     } else if (mod && k === "x") {
       e.preventDefault();
       tagClipboard.set(sel.map((i) => tags[i]));
-      onchange(tags.filter((_, i) => !selected.has(i)));
+      onchange(tags.filter((_, i) => !selSet.has(i)));
       selected = new Set();
     } else if (mod && k === "v") {
       e.preventDefault();
@@ -395,6 +406,7 @@
         <span class={markerCls} aria-hidden="true"></span>
       {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
       <span
         data-tag-index={i}
         onpointerdown={(e) => onPillPointerDown(i, e)}
@@ -402,7 +414,7 @@
         ondblclick={() => onPillDblClick(i)}
         class="inline-flex rounded-full transition-shadow {ringClass(i, tag)}
           {reorderable && editingIndex !== i ? 'cursor-grab active:cursor-grabbing' : ''}
-          {didDrag && selected.has(i) ? 'opacity-40' : ''}"
+          {dragging && selected.has(i) ? 'opacity-40' : ''}"
       >
         <TagPill
           text={tag}
