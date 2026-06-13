@@ -896,6 +896,49 @@ def test_prune_no_op_when_under_limit(tmp_path: Path):
     assert training.prune_checkpoints(run_dir, keep_last_n=5) == []
 
 
+def test_prune_trims_resume_state_to_latest_keeping_all_epochs(tmp_path: Path):
+    """keep_last_n=0 keeps every epoch adapter (the deliverables) but still
+    trims the heavy global_step resume state down to the latest one."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for i in (1, 2, 3):
+        _make_ckpt(run_dir, f"epoch{i}")
+    for step in (100, 200, 300):
+        _make_ckpt(run_dir, f"global_step{step}")
+    deleted = training.prune_checkpoints(run_dir, keep_last_n=0)
+    assert sorted(deleted) == ["global_step100", "global_step200"]
+    remaining = {c.name for c in training.discover_checkpoints(run_dir)}
+    assert remaining == {"epoch1", "epoch2", "epoch3", "global_step300"}
+
+
+def test_prune_resume_and_epochs_pruned_independently(tmp_path: Path):
+    """keep_last_n counts only epoch deliverables; resume state is always
+    trimmed to the latest regardless of that number."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for i in (1, 2, 3, 4, 5):
+        _make_ckpt(run_dir, f"epoch{i}")
+    for step in (100, 200, 300):
+        _make_ckpt(run_dir, f"global_step{step}")
+    deleted = training.prune_checkpoints(run_dir, keep_last_n=2)
+    assert sorted(deleted) == [
+        "epoch1", "epoch2", "epoch3", "global_step100", "global_step200",
+    ]
+    remaining = {c.name for c in training.discover_checkpoints(run_dir)}
+    assert remaining == {"epoch4", "epoch5", "global_step300"}
+
+
+def test_prune_leaves_single_resume_checkpoint_untouched(tmp_path: Path):
+    """One resume checkpoint is the latest by definition — nothing to trim."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _make_ckpt(run_dir, "epoch1")
+    _make_ckpt(run_dir, "global_step500")
+    assert training.prune_checkpoints(run_dir, keep_last_n=0) == []
+    remaining = {c.name for c in training.discover_checkpoints(run_dir)}
+    assert remaining == {"epoch1", "global_step500"}
+
+
 # ----- caption rendering ----------------------------------------------------
 
 

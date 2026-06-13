@@ -597,7 +597,7 @@
         <h3 class="text-sm font-medium text-slate-200 mb-3">Checkpoint retention</h3>
         <label
           class="block text-xs"
-          title="Cap on how many epoch checkpoints survive after a run finishes. The newest N are kept; older ones are deleted. 0 disables pruning (keep everything). DeepSpeed resume state is pruned separately."
+          title="Cap on how many epoch (LoRA) checkpoints survive after a run finishes. The newest N are kept; older ones are deleted. 0 keeps every epoch. DeepSpeed resume state is always trimmed to the latest, regardless of this number."
         >
           <span class="flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500">
             <span>keep last N checkpoints (0 = keep all)</span>
@@ -610,7 +610,8 @@
           />
           <span class="block text-[10px] text-slate-600 mt-1">
             Older checkpoints are pruned at the end of each run. Default
-            (<code class="text-slate-400">0</code>) keeps every checkpoint.
+            (<code class="text-slate-400">0</code>) keeps every epoch adapter;
+            DeepSpeed resume state is always trimmed to the latest.
           </span>
         </label>
       </div>

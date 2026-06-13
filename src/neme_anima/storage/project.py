@@ -148,7 +148,9 @@ class TrainingConfig:
     (validated to actually exist on disk before a run is allowed to start),
     hyperparameters (faithful to the reference TOML), and captioning +
     checkpoint retention. ``keep_last_n_checkpoints == 0`` means
-    "keep all" — the user-requested default.
+    "keep every epoch adapter" — the user-requested default; DeepSpeed
+    resume state is always trimmed to the latest regardless (see
+    ``training.prune_checkpoints``).
     """
 
     preset: str = "style"  # "style" | "character"
@@ -225,7 +227,9 @@ class TrainingConfig:
     tag_dropout_pct: int = 10
     trigger_token: str = ""
 
-    # Retention: 0 = keep every checkpoint (the user-requested default).
+    # Retention: how many epoch (LoRA) checkpoints to keep; 0 = keep all
+    # (the user-requested default). DeepSpeed resume state (global_step dirs)
+    # is always trimmed to the latest, independent of this number.
     keep_last_n_checkpoints: int = 0
 
     def __post_init__(self) -> None:

@@ -1160,18 +1160,38 @@ def tag_run_safetensors(project: Project, run_dir: Path) -> list[str]:
 def prune_checkpoints(
     run_dir: Path, *, keep_last_n: int,
 ) -> list[str]:
-    """Delete all but the most recent ``keep_last_n`` checkpoint dirs.
+    """Trim a finished run's checkpoints, treating the two artifact kinds
+    separately.
 
-    ``keep_last_n == 0`` is a no-op (the user-requested default — keep
-    everything). Returns the list of deleted directory names so the caller
-    can log / surface it.
+    diffusion-pipe leaves behind two very different things (see
+    ``discover_checkpoints``): ``epoch{N}`` dirs holding the LoRA
+    ``adapter_model.safetensors`` (the *deliverables* — you keep several to
+    compare and pick the best epoch) and ``global_step{N}`` dirs holding the
+    heavy DeepSpeed optimizer + model state (the *resume* plumbing — ~4x the
+    size of an adapter, and only the latest is ever resumed from).
+
+    - **Resume state** is always trimmed to the single latest checkpoint
+      (highest step). This happens regardless of ``keep_last_n`` — once a run
+      is over there is no value in older resume snapshots.
+    - **Epoch deliverables** honour ``keep_last_n``: keep the most recent N,
+      delete the rest. ``keep_last_n == 0`` keeps every epoch (the
+      user-requested default).
+
+    ``discover_checkpoints`` returns the list already sorted ascending (epoch,
+    then step), so the latest of each kind is simply the last element. Returns
+    the deleted directory names so the caller can log / surface them.
     """
-    if keep_last_n <= 0:
-        return []
     cps = discover_checkpoints(run_dir)
-    if len(cps) <= keep_last_n:
-        return []
-    to_delete = cps[: len(cps) - keep_last_n]
+    # epoch is None == resume plumbing (global_step / step); else a deliverable.
+    deliverables = [c for c in cps if c.epoch is not None]
+    resume = [c for c in cps if c.epoch is None]
+
+    to_delete: list[CheckpointInfo] = []
+    if len(resume) > 1:
+        to_delete.extend(resume[:-1])
+    if keep_last_n > 0 and len(deliverables) > keep_last_n:
+        to_delete.extend(deliverables[: len(deliverables) - keep_last_n])
+
     deleted: list[str] = []
     for cp in to_delete:
         target = Path(cp.path)
