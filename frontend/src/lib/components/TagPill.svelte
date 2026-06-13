@@ -126,7 +126,16 @@
   function acceptSuggestion(s: Suggestion) {
     value = s.entry.name; // canonical space form
     acDismissed = true;
-    finalize(true); // accept = explicit validate (may chain a draft)
+    finalize(true); // explicit validate — clicking a suggestion commits it
+  }
+
+  // Fill the field with a suggestion WITHOUT committing, so the user can keep
+  // editing and then validate with Enter. Tab and → (cursor at end) use this;
+  // only Enter (verbatim) or clicking a suggestion actually commits.
+  function acceptInline(s: Suggestion) {
+    value = s.entry.name; // canonical space form; closing the dropdown next
+    acDismissed = true;
+    acIndex = 0;
   }
 
   function onKeydown(ev: KeyboardEvent) {
@@ -142,16 +151,18 @@
         return;
       }
       if (ev.key === "Tab") {
+        // Fill the field, keep editing — does NOT validate (Enter does).
         ev.preventDefault();
-        acceptSuggestion(suggestions[acIndex]);
+        acceptInline(suggestions[acIndex]);
         return;
       }
       if (ev.key === "ArrowRight") {
-        // Accept only when the cursor is at the very end, so mid-text → moves.
+        // Complete inline only when the cursor is at the very end, so mid-text
+        // → still moves the caret. Like Tab, this fills without validating.
         const el = ev.currentTarget as HTMLInputElement;
         if (el.selectionStart === el.value.length && el.selectionEnd === el.value.length) {
           ev.preventDefault();
-          acceptSuggestion(suggestions[acIndex]);
+          acceptInline(suggestions[acIndex]);
           return;
         }
       }
