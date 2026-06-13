@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelteTesting } from "@testing-library/svelte/vite";
 import { closeSync, openSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -17,7 +18,7 @@ const keepStaticGitkeep = {
 };
 
 export default defineConfig(({ mode }) => ({
-  plugins: [svelte(), keepStaticGitkeep],
+  plugins: [svelte(), svelteTesting(), keepStaticGitkeep],
   resolve: {
     alias: {
       $lib: resolve(__dirname, "src/lib"),
