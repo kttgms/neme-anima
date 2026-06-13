@@ -150,6 +150,7 @@
       const parsed = parseTags(splitSidecar(r.text).danbooru);
       savedTags = parsed;
       tags = [...parsed];
+      clearTagSelection?.(); // server normalization may reorder — drop stale index selection
       framesStore.markRetagged(filename);
       framesStore.setSidecarFlags(filename, { has_tags: parsed.length > 0 });
       savedFlash.trigger();

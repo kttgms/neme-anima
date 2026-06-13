@@ -140,6 +140,7 @@
     if (!(hovered || focusWithin)) return;
     function onKeydown(e: KeyboardEvent) {
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "v") return;
+      if (!hovered) return; // paste targets the tile under the pointer (not a focus-only tile)
       const el = document.activeElement as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
       if (tagClipboard.size === 0) return;
