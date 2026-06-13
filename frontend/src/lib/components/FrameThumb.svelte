@@ -6,6 +6,7 @@
   import { viewStore } from "$lib/stores/view.svelte";
   import type { FrameRecord } from "$lib/types";
   import { parseTags, splitSidecar } from "$lib/sidecar";
+  import { tagClipboard } from "$lib/stores/tagClipboard.svelte";
   import TagList from "./TagList.svelte";
 
   type Props = {
@@ -130,6 +131,26 @@
       has_tags: Boolean(splitSidecar(r.text).danbooru),
     });
   }
+
+  // While the hover/focus tag panel is up, Ctrl/Cmd+V appends the shared tag
+  // clipboard to this frame (auto-saved). The modal's other selection-based
+  // shortcuts need a selection this surface doesn't have. Skipped while a tag
+  // input is focused so the input's own text-paste wins.
+  $effect(() => {
+    if (!(hovered || focusWithin)) return;
+    function onKeydown(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "v") return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (tagClipboard.size === 0) return;
+      const merged = parseTags([...realPills, ...tagClipboard.tags].join(", "));
+      if (merged.length === realPills.length) return; // all duplicates → no-op
+      e.preventDefault();
+      void saveTagsLine(merged.join(", "));
+    }
+    document.addEventListener("keydown", onKeydown);
+    return () => document.removeEventListener("keydown", onKeydown);
+  });
 
   let imageUrl = $derived(
     projectsStore.active ? api.frameImageUrl(projectsStore.active.slug, frame.filename) : "",
