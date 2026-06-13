@@ -5,22 +5,33 @@
 
   type Props = {
     text: string;
-    onreplace: (next: string) => void;
-    /** Called when an existing pill is committed empty — parent should drop
-     *  the tag entirely. If omitted, empty commits revert to the old text. */
+    /** Uncontrolled commit (grid surface). Optional so the controlled path
+     *  (which uses `oncommit`) need not pass it. */
+    onreplace?: (next: string) => void;
+    /** Called when an existing pill is committed empty — parent should drop the
+     *  tag. If omitted, empty commits revert to the old text. */
     ondelete?: () => void;
-    /** Called when a *placeholder* pill (created by the "+" button) is
-     *  dismissed without typing — parent should remove the temporary slot. */
+    /** Called when a placeholder/draft pill is dismissed without typing, or on
+     *  Escape in controlled mode — parent removes the slot / closes the editor. */
     oncancel?: () => void;
-    /** Mount the pill directly in edit mode (used for the "+" placeholder). */
+    /** Mount the pill directly in edit mode (uncontrolled "+" placeholder). */
     startEditing?: boolean;
-    /** Visual size. "sm" (default) matches the dense thumbnail hover panel;
-     *  "md" is ~30% larger for the roomier crop-modal tag editor. */
+    /** Visual size. "sm" (grid) / "md" (crop modal). */
     size?: "sm" | "md";
     /** Enable the danbooru autocomplete dropdown while editing. */
     autocomplete?: boolean;
     /** Other tags already on the frame — excluded from suggestions. */
     existingTags?: string[];
+    // ---- controlled mode (rich TagList) ----
+    /** When provided, the PARENT controls edit state. The pill shows its input
+     *  when true and a static label + ✕ when false, and never self-toggles.
+     *  Omit for the uncontrolled grid behavior. */
+    editing?: boolean;
+    /** Commit a non-empty edit (controlled). `chain` is true for an explicit
+     *  validate (Enter / accept-suggestion), false for a blur. */
+    oncommit?: (next: string, chain: boolean) => void;
+    /** A comma list was pasted while editing (controlled) — split into parts. */
+    onsplitpaste?: (parts: string[]) => void;
   };
   const {
     text,
@@ -31,49 +42,54 @@
     size = "sm",
     autocomplete = false,
     existingTags = [],
+    editing: editingProp = undefined,
+    oncommit,
+    onsplitpaste,
   }: Props = $props();
 
-  let editing = $state<boolean>(startEditing);
+  // Controlled when the parent passes an `editing` boolean.
+  let controlled = $derived(editingProp !== undefined);
+  let internalEditing = $state<boolean>(startEditing);
+  let isEditing = $derived(controlled ? (editingProp as boolean) : internalEditing);
+
   let value = $state(text);
   let inputEl = $state<HTMLInputElement | null>(null);
+  // Commit guard: Enter flips out of edit and the trailing blur must not
+  // re-fire the commit. Plain (non-reactive) so toggling it never re-renders.
+  let committed = false;
 
   // Autocomplete: dismissed closes the dropdown without leaving edit mode
   // (Escape / after accepting); typing re-opens it.
   let acDismissed = $state(false);
   let acIndex = $state(0);
 
-  // Kick off the one-time vocabulary load the first time an autocomplete-
-  // enabled pill enters edit mode.
+  // One-time vocabulary load the first time an autocomplete-enabled pill edits.
   $effect(() => {
-    if (autocomplete && editing) tagVocabulary.ensureLoaded();
+    if (autocomplete && isEditing) tagVocabulary.ensureLoaded();
   });
 
-  // Exclude every other tag on the frame (but allow re-typing this pill's own
-  // current text) from the suggestion list.
+  // Exclude every other tag on the frame (allow re-typing this pill's own text).
   let excludeKeys = $derived(
     new Set(existingTags.filter((t) => t !== text).map(normalizeTagKey)),
   );
 
   let suggestions = $derived<Suggestion[]>(
-    autocomplete && editing && !acDismissed && value.trim()
+    autocomplete && isEditing && !acDismissed && value.trim()
       ? tagVocabulary.search(value, { exclude: excludeKeys })
       : [],
   );
   let acOpen = $derived(suggestions.length > 0);
 
+  // Sync the buffer to the canonical text whenever not editing (external
+  // updates after a save). While editing, `value` holds the user's input.
   $effect(() => {
-    // Sync the buffer to the canonical text whenever it changes from the
-    // outside (e.g. after a save). Only do this when not actively editing
-    // so we don't yank the user's in-progress edit out from under them.
-    if (!editing) value = text;
+    if (!isEditing) value = text;
   });
 
-  // When we transition into edit mode, auto-select the existing text so the
-  // user can immediately retype to replace, or hit Backspace + Enter to
-  // delete the tag. For the placeholder pill (text === ""), there's nothing
-  // to select — the cursor just sits at the empty input.
+  // On entering edit: reset the commit guard, focus + select the input.
   $effect(() => {
-    if (!editing) return;
+    if (!isEditing) return;
+    committed = false;
     const el = inputEl;
     if (!el) return;
     queueMicrotask(() => {
@@ -82,43 +98,35 @@
     });
   });
 
-  function finalize() {
-    // Shared commit path for Enter, blur, and accepting a suggestion.
+  function finalize(chain: boolean) {
+    if (committed) return;
+    committed = true;
     const trimmed = value.trim();
-    editing = false;
+    if (!controlled) internalEditing = false;
     if (trimmed === "") {
-      // Empty existing pill = delete. Empty placeholder = discard.
+      // Empty existing pill = delete; empty placeholder/draft = discard.
       if (text === "") oncancel?.();
       else ondelete?.();
       return;
     }
-    if (trimmed !== text) onreplace(trimmed);
+    if (controlled) oncommit?.(trimmed, chain);
+    else if (trimmed !== text) onreplace?.(trimmed);
   }
 
-  function commit(ev: KeyboardEvent | FocusEvent) {
-    // Idempotency guard (see original comment): Enter flips editing=false and
-    // the subsequent blur would otherwise double-fire onreplace.
-    if (!editing) return;
-    if (ev instanceof KeyboardEvent && ev.key === "Escape") {
-      ev.preventDefault();
-      if (text === "" && oncancel) {
-        editing = false;
-        oncancel();
-        return;
-      }
+  function cancel() {
+    if (committed) return;
+    committed = true;
+    if (!controlled) {
       value = text;
-      editing = false;
-      return;
+      internalEditing = false;
     }
-    if (ev instanceof KeyboardEvent && ev.key !== "Enter") return;
-    if (ev instanceof KeyboardEvent) ev.preventDefault();
-    finalize();
+    oncancel?.();
   }
 
   function acceptSuggestion(s: Suggestion) {
     value = s.entry.name; // canonical space form
     acDismissed = true;
-    finalize();
+    finalize(true); // accept = explicit validate (may chain a draft)
   }
 
   function onKeydown(ev: KeyboardEvent) {
@@ -133,21 +141,43 @@
         acIndex = (acIndex - 1 + suggestions.length) % suggestions.length;
         return;
       }
-      if (ev.key === "Enter" || ev.key === "Tab") {
+      if (ev.key === "Tab") {
         ev.preventDefault();
         acceptSuggestion(suggestions[acIndex]);
         return;
       }
+      if (ev.key === "ArrowRight") {
+        // Accept only when the cursor is at the very end, so mid-text → moves.
+        const el = ev.currentTarget as HTMLInputElement;
+        if (el.selectionStart === el.value.length && el.selectionEnd === el.value.length) {
+          ev.preventDefault();
+          acceptSuggestion(suggestions[acIndex]);
+          return;
+        }
+      }
       if (ev.key === "Escape") {
-        // Close the dropdown only; keep editing. A second Escape reverts (the
-        // dropdown is closed by then, so commit() handles it).
+        // Close the dropdown only; keep editing. A second Escape reverts.
         ev.preventDefault();
         ev.stopPropagation();
         acDismissed = true;
         return;
       }
+      // Enter falls through → commit the typed text verbatim.
     }
-    commit(ev);
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      finalize(true);
+      return;
+    }
+    if (ev.key === "Tab") {
+      // Only ever completes a suggestion (handled above while open) — never validates.
+      ev.preventDefault();
+      return;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      cancel();
+    }
   }
 
   function onInput() {
@@ -156,14 +186,21 @@
     acIndex = 0;
   }
 
-  // Heuristic: a tag containing "character" — server doesn't currently expose
-  // a flag for character vs general tags in the listFrames payload, so we
-  // treat anything that LOOKS like a character name as "important". This is
-  // intentionally simple for v1; server-driven labels are a Phase 2C polish.
+  function onPaste(ev: ClipboardEvent) {
+    if (!controlled) return; // grid keeps default paste-into-input
+    const pasted = ev.clipboardData?.getData("text") ?? "";
+    if (!pasted.includes(",")) return;
+    ev.preventDefault();
+    const parts = pasted.split(",").map((t) => t.trim()).filter(Boolean);
+    if (parts.length) {
+      committed = true;
+      onsplitpaste?.(parts);
+    }
+  }
+
+  // Heuristic "important" tag styling (unchanged): looks like a character name.
   let isCharacter = $derived(text.toLowerCase().includes("character"));
 
-  // "md" bumps the dense 9.5px pill up ~30% for the crop-modal tag editor,
-  // with proportionally larger padding and a wider edit input.
   let sz = $derived(
     size === "md"
       ? { text: "text-[11.25px]", btn: "px-2 py-0.5", input: "px-2.5 py-0.5 w-28" }
@@ -171,14 +208,17 @@
   );
 </script>
 
-{#if editing}
+{#if isEditing}
   <input
     bind:this={inputEl}
     bind:value
     oninput={onInput}
     onkeydown={onKeydown}
-    onblur={commit}
+    onblur={() => finalize(false)}
+    onpaste={onPaste}
     onclick={(e) => e.stopPropagation()}
+    onpointerdown={(e) => e.stopPropagation()}
+    ondblclick={(e) => e.stopPropagation()}
     placeholder={text === "" ? "new tag…" : ""}
     class="{sz.input} {sz.text} rounded-full bg-accent-500 text-white shadow-[0_0_0_1.5px_rgba(199,210,254,1),0_0_12px_rgba(99,102,241,0.6)] outline-none placeholder-white/60"
   />
@@ -191,10 +231,27 @@
       onhover={(i) => (acIndex = i)}
     />
   {/if}
+{:else if controlled}
+  <!-- Controlled static label: text + ✕. No self-edit — the container's
+       wrapper handles double-click to edit and pointer-down to select/drag. -->
+  <span
+    class="{sz.btn} {sz.text} inline-flex items-center gap-1 rounded-full backdrop-blur-sm border border-white/5 select-none
+      {isCharacter ? 'bg-amber2-500/85 text-amber-950 font-medium' : 'bg-white/15 text-white'}"
+  >
+    <span>{text}</span>
+    <button
+      type="button"
+      aria-label="Delete tag"
+      tabindex="-1"
+      onpointerdown={(e) => e.stopPropagation()}
+      onclick={(e) => { e.stopPropagation(); ondelete?.(); }}
+      class="leading-none opacity-60 hover:opacity-100 hover:text-rose-300 transition-opacity"
+    >×</button>
+  </span>
 {:else}
   <button
     type="button"
-    onclick={(e) => { e.stopPropagation(); editing = true; }}
+    onclick={(e) => { e.stopPropagation(); internalEditing = true; }}
     class="{sz.btn} {sz.text} rounded-full backdrop-blur-sm border border-white/5 transition-colors
       {isCharacter ? 'bg-amber2-500/85 text-amber-950 font-medium' : 'bg-white/15 text-white hover:bg-white/25'}"
   >
