@@ -1,8 +1,27 @@
-"""End-to-end orchestration for project-centric extraction + rerun."""
+"""End-to-end orchestration for project-centric extraction + rerun.
+
+Two-phase pipeline:
+
+  Phase 1 — **Scan** (character-independent):
+    scenes → detect → track → cache.  Shared across projects via global cache.
+
+  Phase 2 — **Identify** (character-dependent):
+    route tracklets → select frames → crop → dedup → tag.
+    Supports character-parallel processing via ThreadPoolExecutor.
+
+Public entry points:
+  * :func:`run_scan`     — phase 1 only (pre-scan, cache generation)
+  * :func:`run_identify`  — phase 2 only (uses cached scan result)
+  * :func:`run_extract`   — phase 1 + 2 (backward-compatible)
+  * :func:`run_rerun`     — phase 2 from cache (backward-compatible)
+"""
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -13,13 +32,18 @@ from rich.progress import (
     TimeElapsedColumn, TimeRemainingColumn,
 )
 
-from neme_anima.config import Thresholds
+from neme_anima.config import PipelineConfig, Thresholds
 from neme_anima.crop import crop_frame
 from neme_anima.dedup import dedup_kept_for_video
 from neme_anima.detect import Detector, FrameDetections
-from neme_anima.extraction_cache import stamp_meta
+from neme_anima.extraction_cache import (
+    cache_state,
+    restore_from_global,
+    stamp_global,
+    stamp_meta,
+)
 from neme_anima.frame_select import select_frames
-from neme_anima.identify import MultiCharacterRouter
+from neme_anima.identify import MultiCharacterRouter, RoutedTrackletScore
 from neme_anima.output import OutputWriter
 from neme_anima.pipeline_progress import NULL_PROGRESS, PipelineProgress
 from neme_anima.storage.metadata import FrameRecord
@@ -27,6 +51,8 @@ from neme_anima.storage.project import Project, Source
 from neme_anima.tag import Tagger, join_sidecar, split_sidecar
 from neme_anima.track import Tracklet, track_scene
 from neme_anima.video import Scene, Video, detect_scenes
+
+logger = logging.getLogger(__name__)
 
 console = Console()
 
@@ -49,6 +75,34 @@ def _flush_cuda_cache() -> None:
         pass
 
 
+def _malloc_trim() -> None:
+    """Return freed glibc arena pages to the OS (Linux only, no-op elsewhere).
+
+    After ``gc.collect()`` runs Python/ONNX/decord destructors, the
+    underlying C allocations are handed back to glibc's pool — but glibc
+    does NOT unmap those pages by itself; it keeps them in its "wilderness"
+    for potential reuse.  On a long-lived server that runs many extract jobs
+    this produces a steady stream of ~64 MB ``[anon]`` mappings visible in
+    ``pmap`` that never disappear, even though the data is logically freed.
+
+    ``malloc_trim(0)`` walks every arena and calls ``madvise(MADV_DONTNEED)``
+    on pages above the current high-water mark, returning them to the OS
+    immediately.  It is the standard glibc knob for this situation and is
+    used by e.g. gRPC, TensorFlow Serving, and PostgreSQL for the same
+    reason.
+
+    ``ctypes.CDLL(None)`` resolves to the process's own libc on Linux.
+    On macOS ``malloc_trim`` does not exist (macOS uses a different
+    allocator); on Windows there is no libc at all — both raise
+    ``AttributeError`` or ``OSError``, caught and ignored below.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL(None).malloc_trim(0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 _IMGUTILS_LRU_CACHES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # WD14 tagger: ONNX session for the chosen model (e.g. EVA02_Large ~1.5 GB).
     ("imgutils.tagging.wd14", ("_get_wd14_model",)),
@@ -63,7 +117,7 @@ _IMGUTILS_LRU_CACHES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def _release_pipeline_models() -> None:
-    """Drop heavy GPU references and force the allocator to give VRAM back.
+    """Drop heavy GPU/CPU references and force allocators to give memory back.
 
     Called from a ``finally`` in both pipeline entry points so a crash
     in the middle of a run still releases the model sessions. Each
@@ -73,8 +127,12 @@ def _release_pipeline_models() -> None:
     those sessions — the lru_cache pins them for the life of the
     process. ``cache_clear()`` is the only path that breaks the
     reference, and ``gc.collect()`` then has to fire to actually run
-    the ONNX destructors that release device memory. The CUDA flush at
-    the end is just for PyTorch's pool (ONNX has its own).
+    the ONNX destructors that release device memory.
+
+    After gc.collect(), ``_malloc_trim()`` asks glibc to unmap the freed
+    pages so they disappear from RSS/pmap instead of accumulating run-
+    over-run. ``_flush_cuda_cache()`` is last: it returns PyTorch's VRAM
+    pool (ONNX Runtime has its own arena, not affected by this call).
     """
     import importlib
     for module_path, fn_names in _IMGUTILS_LRU_CACHES:
@@ -92,6 +150,7 @@ def _release_pipeline_models() -> None:
                     pass
     import gc
     gc.collect()
+    _malloc_trim()
     _flush_cuda_cache()
 
 
@@ -125,16 +184,42 @@ def _resolve_thresholds(project: Project) -> Thresholds:
     return base
 
 
-def run_extract(
+# ---------------------------------------------------------------------------
+# ScanResult — returned by run_scan, consumed by run_identify
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ScanResult:
+    """Output of Phase 1 (scan): character-independent detection + tracking."""
+    video_stem: str
+    scenes: list[Scene]
+    tracklets: list[Tracklet]
+    from_cache: bool  # True if the result was loaded from cache (no GPU work)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — run_scan (detection + tracking)
+# ---------------------------------------------------------------------------
+
+def run_scan(
     *, project: Project, source_idx: int,
     progress: PipelineProgress | None = None,
-    release_models: bool = True,
-) -> None:
+    pipeline_cfg: PipelineConfig | None = None,
+) -> ScanResult:
+    """Phase 1: character-independent detection and tracking.
+
+    Runs scenes → detect → track and caches the results. If a valid cache
+    already exists (local or global), returns immediately from cache.
+
+    Can be called standalone ("pre-scan") before any character references
+    are configured, or implicitly via :func:`run_extract`.
+    """
     progress = progress or NULL_PROGRESS
+    pipeline_cfg = pipeline_cfg or PipelineConfig()
     try:
-        _run_extract_inner(
+        return _run_scan_inner(
             project=project, source_idx=source_idx, progress=progress,
-            release_models=release_models,
+            pipeline_cfg=pipeline_cfg,
         )
     except Exception as exc:
         progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
@@ -163,15 +248,239 @@ def _allowed_frame_ranges(
     return out or None
 
 
-def _run_extract_inner(
+def _segments_for_stamp(project: Project, video_stem: str) -> list[dict]:
+    """Return the source's segments as plain dicts for cache stamping."""
+    for s in project.sources:
+        if Path(s.path).stem == video_stem:
+            return [
+                {"start_seconds": seg.start_seconds, "end_seconds": seg.end_seconds}
+                for seg in s.segments
+            ]
+    return []
+
+
+def _run_scan_inner(
     *, project: Project, source_idx: int, progress: PipelineProgress,
-    release_models: bool,
+    pipeline_cfg: PipelineConfig,
+) -> ScanResult:
+    progress.stage_start("setup", "Setup", message="Loading video")
+    thresholds = _resolve_thresholds(project)
+    source = project.sources[source_idx]
+    video_path = Path(source.path)
+    video_stem = project.video_stem(source_idx)
+    vid = Video(video_path)
+    writer = OutputWriter(project=project, video_stem=video_stem)
+
+    console.rule(f"[bold]neme-anima scan[/bold] :: {video_path.name}")
+    console.print(f"video: {vid.num_frames} frames @ {vid.fps:.2f} fps "
+                  f"({vid.duration_seconds:.1f} s)")
+    progress.stage_done(
+        "setup",
+        message=f"{vid.num_frames:,} frames @ {vid.fps:.1f} fps",
+    )
+
+    # Check local cache freshness.
+    local_state = cache_state(
+        project=project, video_stem=video_stem,
+        current_thresholds=thresholds,
+    )
+    if local_state == "current":
+        console.print("[green]cache hit (local)[/green] — skipping scan")
+        scenes = writer.read_scenes()
+        tracklets = writer.read_tracklets()
+        # Still mark all scan stages as done for the UI.
+        for key, label in [("scenes", "Scene detection"), ("detect", "Person detection"), ("track", "Tracking")]:
+            progress.stage_start(key, label, message="cached")
+            progress.stage_done(key, message="from cache")
+        return ScanResult(
+            video_stem=video_stem, scenes=scenes, tracklets=tracklets,
+            from_cache=True,
+        )
+
+    # Try global cache.
+    if pipeline_cfg.use_global_cache:
+        segments = _segments_for_stamp(project, video_stem)
+        local_cache_dir = project.cache_dir_for(video_stem)
+        restored = restore_from_global(
+            video_path, thresholds,
+            local_cache_dir=local_cache_dir,
+            segments=segments,
+        )
+        if restored:
+            console.print("[green]cache hit (global)[/green] — skipping scan")
+            scenes = writer.read_scenes()
+            tracklets = writer.read_tracklets()
+            for key, label in [("scenes", "Scene detection"), ("detect", "Person detection"), ("track", "Tracking")]:
+                progress.stage_start(key, label, message="cached")
+                progress.stage_done(key, message="from global cache")
+            return ScanResult(
+                video_stem=video_stem, scenes=scenes, tracklets=tracklets,
+                from_cache=True,
+            )
+
+    # Full scan.
+    progress.stage_start("scenes", "Scene detection", message="Analysing shots")
+    allowed_ranges = _allowed_frame_ranges(source, vid.fps)
+    scenes = detect_scenes(
+        video_path,
+        content_threshold=thresholds.scene.threshold,
+        min_scene_len_frames=thresholds.scene.min_scene_len_frames,
+        time_ranges=allowed_ranges,
+    )
+    if allowed_ranges is not None:
+        console.print(
+            f"segments: {len(source.segments)} time range(s) → "
+            f"{len(scenes)} scene(s)"
+        )
+        if not scenes:
+            raise ValueError(
+                "configured segments do not overlap the video — every range "
+                "falls outside the video (or past its duration of "
+                f"{vid.duration_seconds:.1f}s)"
+            )
+    console.print(f"scenes: {len(scenes)}")
+    writer.write_scenes(scenes)
+    progress.stage_done("scenes", message=f"{len(scenes)} scene{'s' if len(scenes)!=1 else ''}")
+
+    detector = Detector(
+        person_score_min=thresholds.detect.person_score_min,
+        face_score_min=thresholds.detect.face_score_min,
+    )
+    per_scene: dict[int, list[FrameDetections]] = defaultdict(list)
+    stride = max(1, thresholds.detect.frame_stride)
+    total_frames = sum(len(range(s.start_frame, s.end_frame, stride)) for s in scenes)
+
+    progress.stage_start(
+        "detect", "Person detection",
+        total=total_frames,
+        message=f"0 / {total_frames:,} frames",
+    )
+    with _make_progress() as p:
+        task = p.add_task("detect", total=total_frames)
+        with vid:
+            for scene in scenes:
+                for fi, frame in vid.iter_frames(
+                    start=scene.start_frame, end=scene.end_frame, stride=stride
+                ):
+                    fd = detector.detect_frame(fi, frame, with_faces=thresholds.detect.detect_faces)
+                    per_scene[scene.index].append(fd)
+                    p.advance(task)
+                    progress.stage_advance("detect")
+    progress.stage_done("detect", message=f"{total_frames:,} frames scanned")
+
+    progress.stage_start("track", "Tracking", message="Building tracklets")
+    tracklets: list[Tracklet] = []
+    track_cfg = thresholds.track
+    track_cfg = type(track_cfg)(
+        track_thresh=track_cfg.track_thresh, match_thresh=track_cfg.match_thresh,
+        frame_rate=int(round(vid.fps)) or 30,
+        track_buffer=track_cfg.track_buffer, min_tracklet_len=track_cfg.min_tracklet_len,
+    )
+    for scene in scenes:
+        scene_dets = per_scene.get(scene.index, [])
+        if scene_dets:
+            tracklets.extend(track_scene(scene.index, scene_dets, track_cfg))
+    console.print(f"tracklets: {len(tracklets)}")
+    writer.write_tracklets(tracklets)
+    stamp_meta(project, video_stem, thresholds)
+    progress.stage_done("track", message=f"{len(tracklets)} tracklet{'s' if len(tracklets)!=1 else ''}")
+
+    # Stamp global cache.
+    if pipeline_cfg.use_global_cache:
+        segments = _segments_for_stamp(project, video_stem)
+        stamp_global(
+            video_path, thresholds,
+            local_cache_dir=project.cache_dir_for(video_stem),
+            segments=segments,
+        )
+
+    return ScanResult(
+        video_stem=video_stem, scenes=scenes, tracklets=tracklets,
+        from_cache=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — run_identify (character-dependent)
+# ---------------------------------------------------------------------------
+
+def run_identify(
+    *, project: Project, source_idx: int,
+    scan_result: ScanResult | None = None,
+    progress: PipelineProgress | None = None,
+    release_models: bool = True,
+    pipeline_cfg: PipelineConfig | None = None,
+) -> None:
+    """Phase 2: character-dependent identification, selection, dedup, and tagging.
+
+    If ``scan_result`` is ``None``, loads tracklets from the local cache.
+    Supports character-parallel processing via ``pipeline_cfg.parallel_workers``.
+    """
+    progress = progress or NULL_PROGRESS
+    pipeline_cfg = pipeline_cfg or PipelineConfig()
+    try:
+        _run_identify_inner(
+            project=project, source_idx=source_idx,
+            scan_result=scan_result, progress=progress,
+            release_models=release_models, pipeline_cfg=pipeline_cfg,
+        )
+    except Exception as exc:
+        progress.stage_fail("identify", f"{type(exc).__name__}: {exc}")
+        raise
+
+
+def _process_character_batch(
+    *, project: Project, vid: Video, slug: str,
+    items: list[tuple[Tracklet, RoutedTrackletScore]],
+    thresholds: Thresholds, writer: OutputWriter, video_stem: str,
+    ref_features: list[np.ndarray],
+) -> tuple[int, int]:
+    """Process a batch of routed tracklets for a single character.
+
+    Performs frame selection, cropping, and writing. Returns ``(kept, skipped)``.
+    This function is CPU-bound and safe to run in a ThreadPoolExecutor.
+    """
+    kept = 0
+    skipped = 0
+    for tracklet, routed in items:
+        picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
+        for pick in picks:
+            target_filename = OutputWriter.filename_for(
+                video_stem=video_stem, scene_idx=pick.scene_idx,
+                tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
+            )
+            target_png = project.kept_dir / f"{target_filename}.png"
+            if target_png.exists():
+                skipped += 1
+                continue
+            frame = vid.get(pick.frame_idx)
+            cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
+            rec = FrameRecord(
+                filename=target_filename,
+                kept=True,
+                scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
+                frame_idx=pick.frame_idx,
+                timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
+                bbox=pick.detection_bbox,
+                ccip_distance=pick.ccip_distance,
+                sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
+                score=pick.score, video_stem=video_stem,
+                character_slug=slug,
+            )
+            writer.write_kept_image(rec, cropped.image_rgb)
+            kept += 1
+    return kept, skipped
+
+
+def _run_identify_inner(
+    *, project: Project, source_idx: int,
+    scan_result: ScanResult | None,
+    progress: PipelineProgress, release_models: bool,
+    pipeline_cfg: PipelineConfig,
 ) -> None:
     try:
-        progress.stage_start("setup", "Setup", message="Loading video and references")
         thresholds = _resolve_thresholds(project)
-        source = project.sources[source_idx]
-        video_path = Path(source.path)
+        video_path = Path(project.sources[source_idx].path)
         video_stem = project.video_stem(source_idx)
         refs_by_slug = _refs_by_character(project, source_idx)
         if not any(refs_by_slug.values()):
@@ -181,18 +490,10 @@ def _run_extract_inner(
             )
 
         writer = OutputWriter(project=project, video_stem=video_stem)
-        # Scoped wipe: clear only frames belonging to characters that are
-        # active in THIS run (those with at least one effective ref). Frames
-        # whose owning character has all refs opted-out for this source are
-        # preserved — the user's curation on those characters survives.
-        # Rejected samples always wipe regardless. The legacy "wipe
-        # everything" behaviour is recoverable by clearing per-character
-        # refs OR by deleting the files manually.
         preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
         wipe_report = _wipe_outputs_for_stem(
             project, video_stem, preserve_owned_by=preserve_slugs,
         )
-        console.rule(f"[bold]neme-anima[/bold] :: {video_path.name}")
         total_refs = sum(len(v) for v in refs_by_slug.values())
         active_chars = sum(1 for v in refs_by_slug.values() if v)
         if wipe_report["preserved"]:
@@ -203,168 +504,88 @@ def _run_extract_inner(
                 f"{'s' if len(preserve_slugs) != 1 else ''} "
                 f"({', '.join(sorted(preserve_slugs)) or 'none'})"
             )
-        console.print(
-            f"refs: {total_refs} effective across {active_chars} "
-            f"character{'s' if active_chars != 1 else ''}"
-        )
+
+        # Load tracklets from scan_result or cache.
+        if scan_result is not None:
+            tracklets = scan_result.tracklets
+        else:
+            tracklets = writer.read_tracklets()
+        console.print(f"tracklets: {len(tracklets)}")
 
         vid = Video(video_path)
-        console.print(f"video: {vid.num_frames} frames @ {vid.fps:.2f} fps "
-                      f"({vid.duration_seconds:.1f} s)")
-        progress.stage_done(
-            "setup",
-            message=(
-                f"{vid.num_frames:,} frames @ {vid.fps:.1f} fps · "
-                f"{total_refs} ref{'s' if total_refs != 1 else ''} "
-                f"× {active_chars} char{'s' if active_chars != 1 else ''}"
-            ),
-        )
-
-        progress.stage_start("scenes", "Scene detection", message="Analysing shots")
-        # When the user has restricted this source to a set of time segments,
-        # hand the frame ranges to detect_scenes so PySceneDetect only scans
-        # those windows. ContentDetector is a purely local frame-to-frame
-        # algorithm, so per-window scans produce the same cuts as a whole-
-        # video scan clipped to the same windows — at a fraction of the
-        # wall-clock cost on a long source. ``None`` (no segments configured)
-        # keeps the legacy whole-video path byte-identical.
-        allowed_ranges = _allowed_frame_ranges(source, vid.fps)
-        scenes = detect_scenes(
-            video_path,
-            content_threshold=thresholds.scene.threshold,
-            min_scene_len_frames=thresholds.scene.min_scene_len_frames,
-            time_ranges=allowed_ranges,
-        )
-        if allowed_ranges is not None:
-            console.print(
-                f"segments: {len(source.segments)} time range(s) → "
-                f"{len(scenes)} scene(s)"
-            )
-            if not scenes:
-                raise ValueError(
-                    "configured segments do not overlap the video — every range "
-                    "falls outside the video (or past its duration of "
-                    f"{vid.duration_seconds:.1f}s)"
-                )
-        console.print(f"scenes: {len(scenes)}")
-        writer.write_scenes(scenes)
-        progress.stage_done("scenes", message=f"{len(scenes)} scene{'s' if len(scenes)!=1 else ''}")
-
         router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
-        detector = Detector(
-            person_score_min=thresholds.detect.person_score_min,
-            face_score_min=thresholds.detect.face_score_min,
-        )
 
-        per_scene: dict[int, list[FrameDetections]] = defaultdict(list)
-        stride = max(1, thresholds.detect.frame_stride)
-        total_frames = sum(len(range(s.start_frame, s.end_frame, stride)) for s in scenes)
-
-        progress.stage_start(
-            "detect", "Person detection",
-            total=total_frames,
-            message=f"0 / {total_frames:,} frames",
-        )
-        with _make_progress() as p:
-            task = p.add_task("detect", total=total_frames)
-            seen = 0
-            for scene in scenes:
-                for fi, frame in vid.iter_frames(
-                    start=scene.start_frame, end=scene.end_frame, stride=stride
-                ):
-                    fd = detector.detect_frame(fi, frame, with_faces=thresholds.detect.detect_faces)
-                    per_scene[scene.index].append(fd)
-                    p.advance(task)
-                    seen += 1
-                    progress.stage_advance("detect")
-        progress.stage_done("detect", message=f"{total_frames:,} frames scanned")
-
-        progress.stage_start("track", "Tracking", message="Building tracklets")
-        tracklets: list[Tracklet] = []
-        track_cfg = thresholds.track
-        track_cfg = type(track_cfg)(
-            track_thresh=track_cfg.track_thresh, match_thresh=track_cfg.match_thresh,
-            frame_rate=int(round(vid.fps)) or 30,
-            track_buffer=track_cfg.track_buffer, min_tracklet_len=track_cfg.min_tracklet_len,
-        )
-        for scene in scenes:
-            scene_dets = per_scene.get(scene.index, [])
-            if scene_dets:
-                tracklets.extend(track_scene(scene.index, scene_dets, track_cfg))
-        console.print(f"tracklets: {len(tracklets)}")
-        writer.write_tracklets(tracklets)
-        # Stamp the cache freshness snapshot AFTER the parquet writes so the
-        # state on disk is internally consistent — extraction_meta.json is
-        # written if and only if both scenes.parquet and tracklets.parquet
-        # are present and reflect the current scene/detect/track thresholds.
-        stamp_meta(project, video_stem, thresholds)
-        progress.stage_done("track", message=f"{len(tracklets)} tracklet{'s' if len(tracklets)!=1 else ''}")
-
+        # --- Step 1: Route all tracklets (GPU: CCIP inference) ---
         progress.stage_start(
             "identify", "Identify · select · save",
             total=len(tracklets),
             message=f"0 / {len(tracklets)} tracklets",
         )
+        routed_results: list[RoutedTrackletScore] = []
         with _make_progress() as p:
-            task = p.add_task("identify+save", total=len(tracklets))
-            kept, rejected, skipped_collisions = 0, 0, 0
+            task = p.add_task("route", total=len(tracklets))
             for tracklet in tracklets:
                 routed = router.route_tracklet(tracklet, vid)
-                if routed.character_slug is None:
-                    _save_one_rejected_sample(
-                        writer, vid, tracklet, routed.score.median_distance,
-                        thresholds, video_stem,
-                    )
-                    rejected += 1
-                    p.advance(task)
-                    progress.stage_advance("identify")
-                    progress.stage_message(
-                        "identify",
-                        f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
-                    )
-                    continue
-                ref_features = router.reference_features(routed.character_slug)
-                picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
-                for pick in picks:
-                    target_filename = OutputWriter.filename_for(
-                        video_stem=video_stem, scene_idx=pick.scene_idx,
-                        tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
-                    )
-                    target_png = project.kept_dir / f"{target_filename}.png"
-                    # Collision guard: scoped wipe just deleted every file
-                    # belonging to an active character, so any file still at
-                    # this path must belong to a preserved (non-active)
-                    # character. Yield to the preserved owner — overwriting
-                    # would silently destroy curation that the user
-                    # explicitly chose to keep by opting their character out.
-                    if target_png.exists():
-                        skipped_collisions += 1
-                        continue
-                    frame = vid.get(pick.frame_idx)
-                    cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
-                    rec = FrameRecord(
-                        filename=target_filename,
-                        kept=True,
-                        scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
-                        frame_idx=pick.frame_idx,
-                        timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
-                        bbox=pick.detection_bbox,
-                        ccip_distance=pick.ccip_distance,
-                        sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
-                        score=pick.score, video_stem=video_stem,
-                        character_slug=routed.character_slug,
-                    )
-                    # Defer tagging — write the image with an empty .txt so the
-                    # user can review/delete kept frames before paying the
-                    # tagger cost on them.
-                    writer.write_kept_image(rec, cropped.image_rgb)
-                    kept += 1
+                routed_results.append(routed)
                 p.advance(task)
                 progress.stage_advance("identify")
-                progress.stage_message(
-                    "identify",
-                    f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
+
+        # --- Step 2: Group by character ---
+        by_character: dict[str, list[tuple[Tracklet, RoutedTrackletScore]]] = defaultdict(list)
+        rejected_items: list[tuple[Tracklet, RoutedTrackletScore]] = []
+        for tracklet, routed in zip(tracklets, routed_results):
+            if routed.character_slug is None:
+                rejected_items.append((tracklet, routed))
+            else:
+                by_character[routed.character_slug].append((tracklet, routed))
+
+        # --- Step 3: Save rejected samples ---
+        rejected = 0
+        for tracklet, routed in rejected_items:
+            _save_one_rejected_sample(
+                writer, vid, tracklet, routed.score.median_distance,
+                thresholds, video_stem,
+            )
+            rejected += 1
+
+        # --- Step 4: Process characters (parallel or sequential) ---
+        workers = max(1, pipeline_cfg.parallel_workers)
+        if workers > 1 and len(by_character) > 1:
+            console.print(
+                f"[cyan]parallel processing[/cyan] {len(by_character)} characters "
+                f"with {workers} workers"
+            )
+            kept = 0
+            skipped_collisions = 0
+            with ThreadPoolExecutor(max_workers=min(workers, len(by_character))) as pool:
+                futures = {}
+                for slug, char_items in by_character.items():
+                    ref_features = router.reference_features(slug)
+                    futures[slug] = pool.submit(
+                        _process_character_batch,
+                        project=project, vid=vid, slug=slug,
+                        items=char_items, thresholds=thresholds,
+                        writer=writer, video_stem=video_stem,
+                        ref_features=ref_features,
+                    )
+                for slug, future in futures.items():
+                    char_kept, char_skipped = future.result()
+                    kept += char_kept
+                    skipped_collisions += char_skipped
+                    logger.info("character %s: kept=%d skipped=%d", slug, char_kept, char_skipped)
+        else:
+            kept = 0
+            skipped_collisions = 0
+            for slug, char_items in by_character.items():
+                ref_features = router.reference_features(slug)
+                char_kept, char_skipped = _process_character_batch(
+                    project=project, vid=vid, slug=slug,
+                    items=char_items, thresholds=thresholds,
+                    writer=writer, video_stem=video_stem,
+                    ref_features=ref_features,
                 )
+                kept += char_kept
+                skipped_collisions += char_skipped
 
         summary_msg = f"kept {kept} · rejected {rejected}"
         if skipped_collisions:
@@ -396,8 +617,56 @@ def _run_extract_inner(
             f"  (dedup removed {dedup_report.removed})  output: {project.kept_dir}"
         )
     finally:
+        # 1. Close the VideoReader file handle and drop the Python-level
+        #    reference so decord's C destructor can run in step 3.
+        try:
+            vid.close()  # type: ignore[possibly-undefined]
+            del vid       # remove the name binding; refcount → 0 on collect
+        except Exception:  # noqa: BLE001
+            pass
+        # 2. Drop the router's Identifier objects (they hold CCIP numpy
+        #    feature arrays that pin ONNX intermediate buffers).
+        try:
+            del router  # type: ignore[possibly-undefined]
+        except Exception:  # noqa: BLE001
+            pass
+        # 3. Force a GC cycle NOW — before cache_clear() — so that decord
+        #    and router destructors run while their backing ONNX sessions
+        #    are still alive.  Without this, gc.collect() inside
+        #    _release_pipeline_models() would fire *after* the sessions are
+        #    already gone, which risks use-after-free in ORT's finalizer.
+        import gc as _gc
+        _gc.collect()
         if release_models:
             _release_pipeline_models()
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible wrappers
+# ---------------------------------------------------------------------------
+
+def run_extract(
+    *, project: Project, source_idx: int,
+    progress: PipelineProgress | None = None,
+    release_models: bool = True,
+    pipeline_cfg: PipelineConfig | None = None,
+) -> None:
+    """Backward-compatible entry point: runs scan + identify sequentially."""
+    progress = progress or NULL_PROGRESS
+    pipeline_cfg = pipeline_cfg or PipelineConfig()
+    try:
+        scan = run_scan(
+            project=project, source_idx=source_idx,
+            progress=progress, pipeline_cfg=pipeline_cfg,
+        )
+        run_identify(
+            project=project, source_idx=source_idx,
+            scan_result=scan, progress=progress,
+            release_models=release_models, pipeline_cfg=pipeline_cfg,
+        )
+    except Exception as exc:
+        progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
+        raise
 
 
 def _run_tag_stage(
@@ -777,153 +1046,32 @@ def run_rerun(
     *, project: Project, video_stem: str,
     progress: PipelineProgress | None = None,
     release_models: bool = True,
+    pipeline_cfg: PipelineConfig | None = None,
 ) -> None:
+    """Backward-compatible rerun: loads cached tracklets and runs identify."""
     progress = progress or NULL_PROGRESS
-    try:
-        _run_rerun_inner(
-            project=project, video_stem=video_stem, progress=progress,
-            release_models=release_models,
-        )
-    except Exception as exc:
-        progress.stage_fail("setup", f"{type(exc).__name__}: {exc}")
-        raise
-
-
-def _run_rerun_inner(
-    *, project: Project, video_stem: str, progress: PipelineProgress,
-    release_models: bool,
-) -> None:
-    try:
-        progress.stage_start("setup", "Setup", message="Loading cached tracklets")
-        thresholds = _resolve_thresholds(project)
-        # Find the source matching this video_stem.
-        source_idx = next(
-            (i for i, s in enumerate(project.sources) if Path(s.path).stem == video_stem),
-            None,
-        )
-        if source_idx is None:
-            raise ValueError(f"no source matches video_stem={video_stem!r}")
-        refs_by_slug = _refs_by_character(project, source_idx)
-        if not any(refs_by_slug.values()):
-            raise ValueError(
-                "no character has effective references — every character is "
-                "either empty or fully opted-out for this source"
-            )
-
-        writer = OutputWriter(project=project, video_stem=video_stem)
-        tracklets = writer.read_tracklets()
-        console.print(f"cached tracklets: {len(tracklets)}")
-
-        vid = Video(Path(project.sources[source_idx].path))
-        router = MultiCharacterRouter(refs_by_slug=refs_by_slug, cfg=thresholds.identify)
-
-        # Same scoped-wipe semantics as Extract: preserve frames belonging
-        # to non-active characters. Re-process is the iteration loop, so the
-        # preservation matters even more — a user typing in a new ref for
-        # one character shouldn't risk obliterating a sibling character's
-        # curated work.
-        preserve_slugs = _preserve_set_from_refs_by_slug(project, refs_by_slug)
-        wipe_report = _wipe_outputs_for_stem(
-            project, video_stem, preserve_owned_by=preserve_slugs,
-        )
-        if wipe_report["preserved"]:
-            console.print(
-                f"preserved: {wipe_report['preserved']} frame"
-                f"{'s' if wipe_report['preserved'] != 1 else ''} from "
-                f"non-active character"
-                f"{'s' if len(preserve_slugs) != 1 else ''} "
-                f"({', '.join(sorted(preserve_slugs)) or 'none'})"
-            )
-        progress.stage_done(
-            "setup",
-            message=f"{len(tracklets)} cached tracklet{'s' if len(tracklets)!=1 else ''}",
-        )
-
-        progress.stage_start(
-            "identify", "Identify · select · save",
-            total=len(tracklets),
-            message=f"0 / {len(tracklets)} tracklets",
-        )
-        with _make_progress() as p:
-            task = p.add_task("rerun", total=len(tracklets))
-            kept, rejected, skipped_collisions = 0, 0, 0
-            for tracklet in tracklets:
-                routed = router.route_tracklet(tracklet, vid)
-                if routed.character_slug is None:
-                    _save_one_rejected_sample(
-                        writer, vid, tracklet, routed.score.median_distance,
-                        thresholds, video_stem,
-                    )
-                    rejected += 1
-                    p.advance(task)
-                    progress.stage_advance("identify")
-                    progress.stage_message(
-                        "identify",
-                        f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
-                    )
-                    continue
-                ref_features = router.reference_features(routed.character_slug)
-                picks = select_frames(tracklet, vid, ref_features, thresholds.frame_select)
-                for pick in picks:
-                    target_filename = OutputWriter.filename_for(
-                        video_stem=video_stem, scene_idx=pick.scene_idx,
-                        tracklet_id=pick.tracklet_id, frame_idx=pick.frame_idx,
-                    )
-                    target_png = project.kept_dir / f"{target_filename}.png"
-                    # Same collision guard as Extract — yield to a preserved
-                    # frame at the same path. Re-process with an unchanged
-                    # detection cache means filenames are MORE likely to
-                    # collide than in Extract (tracklet IDs are stable), so
-                    # this guard fires more often here.
-                    if target_png.exists():
-                        skipped_collisions += 1
-                        continue
-                    frame = vid.get(pick.frame_idx)
-                    cropped = crop_frame(frame, pick.detection_bbox, thresholds.crop, compute_mask=False)
-                    rec = FrameRecord(
-                        filename=target_filename,
-                        kept=True,
-                        scene_idx=pick.scene_idx, tracklet_id=pick.tracklet_id,
-                        frame_idx=pick.frame_idx,
-                        timestamp_seconds=pick.frame_idx / vid.fps if vid.fps else 0.0,
-                        bbox=pick.detection_bbox,
-                        ccip_distance=pick.ccip_distance,
-                        sharpness=pick.sharpness, visibility=pick.visibility, aspect=pick.aspect,
-                        score=pick.score, video_stem=video_stem,
-                        character_slug=routed.character_slug,
-                    )
-                    writer.write_kept_image(rec, cropped.image_rgb)
-                    kept += 1
-                p.advance(task)
-                progress.stage_advance("identify")
-                progress.stage_message(
-                    "identify",
-                    f"{kept + rejected} / {len(tracklets)} · kept {kept} · rejected {rejected}",
-                )
-        summary_msg = f"kept {kept} · rejected {rejected}"
-        if skipped_collisions:
-            summary_msg += f" · {skipped_collisions} preserved-owner collision(s) skipped"
-        progress.stage_done("identify", message=summary_msg)
-
-        dedup_report = dedup_kept_for_video(
-            project=project, video_stem=video_stem,
-            cfg=thresholds.dedup, progress=progress,
-        )
-
-        _run_tag_stage(
-            project=project, video_stem=video_stem, thresholds=thresholds,
-            progress=progress, pause=project.pause_before_tag,
-            preserve_owned_by=preserve_slugs,
-        )
-
-        _maybe_delete_rejected_for_stem(project, video_stem)
-
-        progress.finish({
-            "kept": kept - dedup_report.removed,
-            "rejected": rejected + dedup_report.removed,
-            "deduped": dedup_report.removed,
-        })
-        console.rule("[bold green]rerun done[/bold green]")
-    finally:
-        if release_models:
-            _release_pipeline_models()
+    pipeline_cfg = pipeline_cfg or PipelineConfig()
+    source_idx = next(
+        (i for i, s in enumerate(project.sources) if Path(s.path).stem == video_stem),
+        None,
+    )
+    if source_idx is None:
+        raise ValueError(f"no source matches video_stem={video_stem!r}")
+    progress.stage_start("setup", "Setup", message="Loading cached tracklets")
+    writer = OutputWriter(project=project, video_stem=video_stem)
+    tracklets = writer.read_tracklets()
+    scenes = writer.read_scenes()
+    console.print(f"cached tracklets: {len(tracklets)}")
+    progress.stage_done(
+        "setup",
+        message=f"{len(tracklets)} cached tracklet{'s' if len(tracklets)!=1 else ''}",
+    )
+    scan = ScanResult(
+        video_stem=video_stem, scenes=scenes, tracklets=tracklets,
+        from_cache=True,
+    )
+    run_identify(
+        project=project, source_idx=source_idx,
+        scan_result=scan, progress=progress,
+        release_models=release_models, pipeline_cfg=pipeline_cfg,
+    )

@@ -173,3 +173,34 @@ Then in the Settings tab, point `diffusion_pipe_dir` at that clone and set the A
 Per-project threshold overrides (frame stride, identification distance, crop padding, etc.).
 
 Project state lives in the project folder. The only server-side file is `~/.neme-anima/db.sqlite` (project registry).
+
+## Docker Deployment
+
+You can run Neme-Anima in a Docker container, avoiding the need to install dependencies directly on your host machine.
+
+### 1. Build the image
+
+```sh
+docker build -t neme-anima .
+```
+
+This multi-stage build will compile the frontend and prepare a Python 3.12 environment with `uv`, `ffmpeg`, and `diffusion-pipe` built-in. 
+
+### 2. Run the container
+
+To ensure the container can leverage your GPU, access your downloaded model weights, and store project data persistently, run the container with NVIDIA runtime and volume mounts:
+
+```sh
+docker run --gpus all \
+  -v ~/.cache/neme-anima/models:/models \
+  -v ~/neme-projects:/data \
+  -p 8000:8000 \
+  -it neme-anima
+```
+
+- `--gpus all`: Exposes your host's NVIDIA GPU to the container.
+- `-v ~/.cache/neme-anima/models:/models`: Mounts the 14GB Anima model weights so they do not need to be baked into the image.
+- `-v ~/neme-projects:/data`: Mounts a persistent host directory to the container's `/data` folder. Your UI settings, sqlite DB, and projects will be safely stored here.
+- `-p 8000:8000`: Forwards the Neme-Anima UI to `http://localhost:8000`.
+
+The container will automatically point the training defaults to the mounted `/models` folder and store UI state in `/data/.neme-anima/`.

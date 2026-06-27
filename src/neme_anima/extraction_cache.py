@@ -18,6 +18,21 @@ This module is the bookkeeping for that:
   * :func:`stamp_meta` writes it to ``cache/<video_stem>/extraction_meta.json``.
   * :func:`cache_state` returns one of "none" / "current" / "stale" given
     the current thresholds — what the UI consumes to decide button states.
+  * :class:`CacheInfo` is a richer descriptor for the UI that includes
+    scene/tracklet counts, disk size, stale reason, and the threshold
+    snapshot that produced the cache.
+  * :func:`cache_info` returns a :class:`CacheInfo` or ``None``.
+  * :func:`purge_cache` deletes the local cache for a single video.
+  * :func:`list_caches` returns :class:`CacheInfo` for every cached video.
+
+Global cache:
+  * Detection/tracking results can optionally be stored in a shared global
+    cache under ``~/.neme-anima/scan_cache/`` so multiple projects that use
+    the same video don’t re-run the expensive scan. The key is derived from
+    the video file’s resolved path + mtime + size + threshold snapshot.
+  * :func:`stamp_global` writes to the global cache.
+  * :func:`lookup_global` reads from the global cache.
+  * :func:`purge_global` deletes a specific global-cache entry.
 
 Only the scene / detect / track sections are tracked. Identification,
 frame selection, cropping, dedup, and tagging are all re-applied by
@@ -26,7 +41,11 @@ Re-process, so changes to those don't invalidate the cache.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
+import shutil
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +53,8 @@ from typing import Literal
 
 from neme_anima.config import DetectConfig, SceneConfig, Thresholds, TrackConfig
 from neme_anima.storage.project import Project
+
+logger = logging.getLogger(__name__)
 
 # Bumped whenever the meta schema changes incompatibly. Old metas without
 # this field (or with a different number) read as "stale" so the user is
@@ -262,12 +283,357 @@ def cache_state_for_source(
     )
 
 
+# ---------------------------------------------------------------------------
+# Stale-reason diffing
+# ---------------------------------------------------------------------------
+
+def _diff_sections(stamped: dict, current: dict, dc_cls: type) -> list[str]:
+    """Return the list of field names where ``stamped`` and ``current`` disagree.
+
+    Used by :func:`cache_info` to build a human-readable stale reason.
+    """
+    diffs: list[str] = []
+    for f in fields(dc_cls()):
+        if f.name not in current:
+            continue
+        if stamped.get(f.name) != current[f.name]:
+            diffs.append(f.name)
+    return diffs
+
+
+def _stale_reason(
+    meta: ExtractionCacheMeta, t: Thresholds,
+    *, segments: list[dict] | None = None,
+) -> str | None:
+    """Human-readable explanation of why the cache is stale, or ``None``."""
+    if meta.version != _META_VERSION:
+        return f"cache version mismatch (cached {meta.version}, expected {_META_VERSION})"
+    if _normalize_segments(segments or []) != _normalize_segments(meta.segments):
+        return "segments changed"
+    reasons: list[str] = []
+    for section_name, dc_cls in [
+        ("scene", SceneConfig), ("detect", DetectConfig), ("track", TrackConfig),
+    ]:
+        stamped = getattr(meta, section_name, {})
+        current = asdict(getattr(t, section_name))
+        diffs = _diff_sections(stamped, current, dc_cls)
+        for d in diffs:
+            reasons.append(f"{section_name}.{d}")
+    return ", ".join(reasons) if reasons else None
+
+
+# ---------------------------------------------------------------------------
+# CacheInfo — rich descriptor for the UI
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CacheInfo:
+    """Detailed cache information for a single video.
+
+    Exposed by the ``GET /cache`` endpoint so the UI can render badges,
+    popovers, and purge buttons.
+    """
+    video_stem: str
+    state: CacheState
+    stamped_at: str | None
+    num_scenes: int
+    num_tracklets: int
+    size_bytes: int
+    stale_reason: str | None
+    thresholds_snapshot: dict | None
+
+
+def _parquet_stats(cache_dir: Path) -> tuple[int, int, int]:
+    """Return ``(num_scenes, num_tracklets, total_bytes)`` from parquet files.
+
+    Falls back to zeros if files are unreadable — this is a best-effort
+    information helper, not a correctness-critical path.
+    """
+    num_scenes = 0
+    num_tracklets = 0
+    total_bytes = 0
+    scenes_pq = cache_dir / "scenes.parquet"
+    tracklets_pq = cache_dir / "tracklets.parquet"
+    if scenes_pq.is_file():
+        total_bytes += scenes_pq.stat().st_size
+        try:
+            import pandas as pd
+            df = pd.read_parquet(scenes_pq)
+            num_scenes = len(df)
+        except Exception:  # noqa: BLE001
+            pass
+    if tracklets_pq.is_file():
+        total_bytes += tracklets_pq.stat().st_size
+        try:
+            import pandas as pd
+            df = pd.read_parquet(tracklets_pq)
+            num_tracklets = len(df.groupby(["scene_idx", "tracklet_id"])) if not df.empty else 0
+        except Exception:  # noqa: BLE001
+            pass
+    meta_json = cache_dir / "extraction_meta.json"
+    if meta_json.is_file():
+        total_bytes += meta_json.stat().st_size
+    return num_scenes, num_tracklets, total_bytes
+
+
+def cache_info(
+    project: Project, video_stem: str,
+    current_thresholds: Thresholds | None = None,
+) -> CacheInfo | None:
+    """Return a :class:`CacheInfo` for ``video_stem``, or ``None`` if no
+    cache files exist at all (not even a directory)."""
+    cache_dir = project.cache_dir_for(video_stem)
+    if not cache_dir.is_dir():
+        return None
+    parquet = cache_dir / "tracklets.parquet"
+    if not parquet.is_file():
+        return None
+    meta = _read_meta(project, video_stem)
+    thresholds = current_thresholds or Thresholds()
+    state = cache_state(
+        project=project, video_stem=video_stem,
+        current_thresholds=thresholds,
+    )
+    stale_reason = None
+    if state == "stale" and meta is not None:
+        current_segments = _segments_for_stem(project, video_stem)
+        stale_reason = _stale_reason(meta, thresholds, segments=current_segments)
+    num_scenes, num_tracklets, size_bytes = _parquet_stats(cache_dir)
+    return CacheInfo(
+        video_stem=video_stem,
+        state=state,
+        stamped_at=meta.stamped_at if meta else None,
+        num_scenes=num_scenes,
+        num_tracklets=num_tracklets,
+        size_bytes=size_bytes,
+        stale_reason=stale_reason,
+        thresholds_snapshot={
+            "scene": meta.scene, "detect": meta.detect, "track": meta.track,
+        } if meta else None,
+    )
+
+
+def purge_cache(project: Project, video_stem: str) -> bool:
+    """Delete the local cache for ``video_stem``. Returns True if deleted."""
+    cache_dir = project.cache_dir_for(video_stem)
+    if not cache_dir.is_dir():
+        return False
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    return True
+
+
+def list_caches(
+    project: Project, current_thresholds: Thresholds | None = None,
+) -> list[CacheInfo]:
+    """Return :class:`CacheInfo` for every video that has cache files."""
+    cache_root = project.root / "output" / "cache"
+    if not cache_root.is_dir():
+        return []
+    infos: list[CacheInfo] = []
+    for d in sorted(cache_root.iterdir()):
+        if not d.is_dir():
+            continue
+        info = cache_info(project, d.name, current_thresholds)
+        if info is not None:
+            infos.append(info)
+    return infos
+
+
+# ---------------------------------------------------------------------------
+# Global scan cache — shared across projects
+# ---------------------------------------------------------------------------
+
+def _default_global_cache_dir() -> Path:
+    """``~/.neme-anima/scan_cache/``."""
+    d = Path(os.environ.get("NEME_SCAN_CACHE_DIR", ""))
+    if d and d != Path():
+        return d
+    return Path.home() / ".neme-anima" / "scan_cache"
+
+
+def _global_cache_key(
+    video_path: Path, thresholds: Thresholds,
+    *, segments: list[dict] | None = None,
+) -> str:
+    """Derive a deterministic directory name from video identity + thresholds.
+
+    Identity is ``resolved_path + mtime + size`` — cheap to compute and
+    accurate as long as the file isn’t replaced in-place (which would be
+    user error for a multi-GB anime source). Thresholds are the scan-
+    affecting subset (scene/detect/track + segments). The digest is
+    truncated to 24 hex chars — collision-free in any realistic corpus.
+    """
+    video_path = Path(video_path).resolve()
+    try:
+        st = video_path.stat()
+        mtime = st.st_mtime
+        size = st.st_size
+    except OSError:
+        mtime = 0.0
+        size = 0
+    identity = {
+        "path": str(video_path),
+        "mtime": mtime,
+        "size": size,
+        "scene": asdict(thresholds.scene),
+        "detect": asdict(thresholds.detect),
+        "track": asdict(thresholds.track),
+        "segments": _normalize_segments(segments or []),
+    }
+    blob = json.dumps(identity, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:24]
+
+
+def stamp_global(
+    video_path: Path, thresholds: Thresholds,
+    *, local_cache_dir: Path,
+    segments: list[dict] | None = None,
+    global_cache_dir: Path | None = None,
+) -> Path | None:
+    """Copy the local cache to the global scan cache.
+
+    Returns the global directory on success, ``None`` if writing fails
+    (disk full, permissions, etc.) — the pipeline must never fail because
+    of a global-cache issue.
+    """
+    gcdir = global_cache_dir or _default_global_cache_dir()
+    key = _global_cache_key(video_path, thresholds, segments=segments)
+    target = gcdir / key
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        for name in ("scenes.parquet", "tracklets.parquet", "extraction_meta.json"):
+            src = local_cache_dir / name
+            if src.is_file():
+                shutil.copy2(src, target / name)
+        # Write a small provenance file so humans can inspect what’s cached.
+        prov = {
+            "video_path": str(Path(video_path).resolve()),
+            "stamped_at": datetime.now(UTC).isoformat(),
+            "key": key,
+        }
+        (target / "provenance.json").write_text(
+            json.dumps(prov, indent=2), encoding="utf-8",
+        )
+        logger.info("global cache stamped: %s -> %s", video_path.name, key)
+        return target
+    except Exception:  # noqa: BLE001
+        logger.warning("failed to stamp global cache for %s", video_path.name, exc_info=True)
+        return None
+
+
+def lookup_global(
+    video_path: Path, thresholds: Thresholds,
+    *, segments: list[dict] | None = None,
+    global_cache_dir: Path | None = None,
+) -> Path | None:
+    """Look up a global-cache hit for the given video + thresholds.
+
+    Returns the global directory containing ``scenes.parquet`` and
+    ``tracklets.parquet`` on hit, ``None`` on miss.
+    """
+    gcdir = global_cache_dir or _default_global_cache_dir()
+    key = _global_cache_key(video_path, thresholds, segments=segments)
+    target = gcdir / key
+    if (
+        target.is_dir()
+        and (target / "tracklets.parquet").is_file()
+        and (target / "extraction_meta.json").is_file()
+    ):
+        return target
+    return None
+
+
+def restore_from_global(
+    video_path: Path, thresholds: Thresholds,
+    *, local_cache_dir: Path,
+    segments: list[dict] | None = None,
+    global_cache_dir: Path | None = None,
+) -> bool:
+    """Copy a global-cache hit into the project’s local cache.
+
+    Returns True if the restore succeeded. Silently returns False on any
+    failure so the pipeline can fall through to a fresh scan.
+    """
+    hit = lookup_global(
+        video_path, thresholds,
+        segments=segments,
+        global_cache_dir=global_cache_dir,
+    )
+    if hit is None:
+        return False
+    try:
+        local_cache_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("scenes.parquet", "tracklets.parquet", "extraction_meta.json"):
+            src = hit / name
+            if src.is_file():
+                shutil.copy2(src, local_cache_dir / name)
+        logger.info(
+            "restored global cache for %s into %s",
+            video_path.name, local_cache_dir,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "failed to restore global cache for %s", video_path.name, exc_info=True,
+        )
+        return False
+
+
+def purge_global(
+    video_path: Path, thresholds: Thresholds,
+    *, segments: list[dict] | None = None,
+    global_cache_dir: Path | None = None,
+) -> bool:
+    """Delete a specific global-cache entry. Returns True if deleted."""
+    gcdir = global_cache_dir or _default_global_cache_dir()
+    key = _global_cache_key(video_path, thresholds, segments=segments)
+    target = gcdir / key
+    if not target.is_dir():
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    return True
+
+
+def list_global_caches(
+    global_cache_dir: Path | None = None,
+) -> list[dict]:
+    """Return provenance info for every entry in the global scan cache."""
+    gcdir = global_cache_dir or _default_global_cache_dir()
+    if not gcdir.is_dir():
+        return []
+    entries: list[dict] = []
+    for d in sorted(gcdir.iterdir()):
+        if not d.is_dir():
+            continue
+        prov_path = d / "provenance.json"
+        if prov_path.is_file():
+            try:
+                prov = json.loads(prov_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prov = {"key": d.name}
+        else:
+            prov = {"key": d.name}
+        prov["size_bytes"] = sum(
+            f.stat().st_size for f in d.iterdir() if f.is_file()
+        )
+        entries.append(prov)
+    return entries
+
+
 # Public for tests that want to inspect the snapshot without re-reading
 # the file.
 __all__ = [
+    "CacheInfo",
     "CacheState",
     "ExtractionCacheMeta",
+    "cache_info",
     "cache_state",
     "cache_state_for_source",
+    "list_caches",
+    "lookup_global",
+    "purge_cache",
+    "purge_global",
+    "restore_from_global",
+    "stamp_global",
     "stamp_meta",
 ]

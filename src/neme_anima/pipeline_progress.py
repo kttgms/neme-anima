@@ -59,3 +59,10 @@ RERUN_STAGES: list[tuple[str, str]] = [
     ("dedup", "Dedup"),
     ("tag", "Tagging"),
 ]
+
+SCAN_STAGES: list[tuple[str, str]] = [
+    ("setup", "Setup"),
+    ("scenes", "Scene detection"),
+    ("detect", "Person detection"),
+    ("track", "Tracking"),
+]

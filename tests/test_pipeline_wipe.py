@@ -119,11 +119,17 @@ def test_run_extract_wipes_prior_stem_outputs_before_new_writes(
     other_png = project.kept_dir / "ep02__s000_t000_f000010.png"
     _touch(other_png)
 
-    # Make scene detection bail so we don't need GPU/CCIP/YOLO. By the
-    # time this raises, the wipe has already run in setup.
+    # Mock run_scan to return an empty result, so execution proceeds to run_identify
+    # where the wipe happens. Then mock MultiCharacterRouter to explode so we exit
+    # early after the wipe.
+    from neme_anima.pipeline import ScanResult
+    def _mock_scan(*a, **kw):
+        return ScanResult(video_stem="ep01", scenes=[], tracklets=[], from_cache=False)
+    monkeypatch.setattr(pipeline_mod, "run_scan", _mock_scan)
+
     def _explode(*a, **kw):
         raise RuntimeError("test-induced bail after setup")
-    monkeypatch.setattr(pipeline_mod, "detect_scenes", _explode)
+    monkeypatch.setattr(pipeline_mod.MultiCharacterRouter, "__init__", _explode)
 
     with pytest.raises(RuntimeError, match="test-induced bail"):
         run_extract(project=project, source_idx=0)
@@ -202,9 +208,14 @@ def test_run_extract_preserves_frames_owned_by_inactive_character(
         score=0.9, video_stem="ep01", character_slug="mio",
     ))
 
+    from neme_anima.pipeline import ScanResult
+    def _mock_scan(*a, **kw):
+        return ScanResult(video_stem="ep01", scenes=[], tracklets=[], from_cache=False)
+    monkeypatch.setattr(pipeline_mod, "run_scan", _mock_scan)
+
     def _explode(*a, **kw):
         raise RuntimeError("test-induced bail after setup")
-    monkeypatch.setattr(pipeline_mod, "detect_scenes", _explode)
+    monkeypatch.setattr(pipeline_mod.MultiCharacterRouter, "__init__", _explode)
 
     with pytest.raises(RuntimeError, match="test-induced bail"):
         run_extract(project=project, source_idx=0)

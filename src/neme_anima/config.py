@@ -144,3 +144,26 @@ class Thresholds:
             }),
             dedup=DedupConfig(**_filter_known(DedupConfig, data.get("dedup", {}))),
         )
+
+
+@dataclass
+class PipelineConfig:
+    """Runtime pipeline configuration (not quality thresholds).
+
+    ``parallel_workers`` controls how many characters are processed
+    concurrently during the identify → select → crop → save phase.
+    Default is 1 (sequential). Set higher on machines with idle CPU
+    cores and sufficient RAM. GPU inference (CCIP routing) always runs
+    on a single thread regardless of this setting — parallelism is for
+    the CPU-bound crop/save work, unless ``parallel_gpu`` is True.
+
+    ``parallel_gpu`` allows CCIP inference itself to run concurrently
+    across characters. Requires enough VRAM to hold multiple concurrent
+    CCIP sessions. Default is False (safe default).
+
+    ``use_global_cache`` enables writing to and restoring from the
+    shared global scan cache (~/.neme-anima/scan_cache/).
+    """
+    parallel_workers: int = 1
+    parallel_gpu: bool = False
+    use_global_cache: bool = True

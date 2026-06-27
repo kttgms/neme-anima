@@ -23,6 +23,8 @@ character_app = typer.Typer(
 app.add_typer(character_app, name="character")
 tags_app = typer.Typer(name="tags", help="Manage the danbooru tag list used for autocomplete.")
 app.add_typer(tags_app, name="tags")
+cache_app = typer.Typer(name="cache", help="Manage the global scan cache.")
+app.add_typer(cache_app, name="cache")
 console = Console()
 
 
@@ -101,9 +103,16 @@ def project_extract(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     video: str | None = typer.Option(None, "--video", "-v",
                                      help="Video stem to extract; default = all sources sequentially."),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel workers for character processing."),
+    parallel_gpu: bool = typer.Option(False, "--parallel-gpu",
+                                      help="Allow CCIP inference to run concurrently across characters. "
+                                           "Requires enough VRAM for multiple concurrent CCIP sessions."),
+    no_global_cache: bool = typer.Option(False, "--no-global-cache",
+                                         help="Disable read/write of the shared global scan cache."),
 ) -> None:
     """Run extraction on one or all sources in this project."""
-    from neme_anima.pipeline import run_extract
+    from neme_anima.config import PipelineConfig
+    from neme_anima.isolated_runner import run_extract_isolated
 
     p = Project.load(project_dir)
     indices = (
@@ -113,20 +122,102 @@ def project_extract(
     if not indices:
         console.print(f"[red]error:[/red] no matching source")
         raise typer.Exit(code=1)
+
+    cfg = PipelineConfig(
+        parallel_workers=workers,
+        parallel_gpu=parallel_gpu,
+        use_global_cache=not no_global_cache,
+    )
     for i in indices:
-        run_extract(project=p, source_idx=i)
+        run_extract_isolated(project=p, source_idx=i, pipeline_cfg=cfg)
 
 
 @project_app.command("rerun")
 def project_rerun(
     project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     video: str = typer.Option(..., "--video", "-v", help="Video stem to rerun."),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel workers for character processing."),
+    parallel_gpu: bool = typer.Option(False, "--parallel-gpu",
+                                      help="Allow CCIP inference to run concurrently across characters."),
+    no_global_cache: bool = typer.Option(False, "--no-global-cache",
+                                         help="Disable read/write of the shared global scan cache."),
 ) -> None:
     """Re-run with cached detections + current thresholds."""
-    from neme_anima.pipeline import run_rerun
+    from neme_anima.config import PipelineConfig
+    from neme_anima.isolated_runner import run_rerun_isolated
 
     p = Project.load(project_dir)
-    run_rerun(project=p, video_stem=video)
+    cfg = PipelineConfig(
+        parallel_workers=workers,
+        parallel_gpu=parallel_gpu,
+        use_global_cache=not no_global_cache,
+    )
+    run_rerun_isolated(project=p, video_stem=video, pipeline_cfg=cfg)
+
+
+@project_app.command("scan")
+def project_scan(
+    project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
+    video: str | None = typer.Option(None, "--video", "-v",
+                                     help="Video stem to scan; default = all sources sequentially."),
+    no_global_cache: bool = typer.Option(False, "--no-global-cache",
+                                         help="Disable read/write of the shared global scan cache."),
+) -> None:
+    """Pre-scan video sources to generate scene/detect/track cache."""
+    from neme_anima.config import PipelineConfig
+    from neme_anima.isolated_runner import run_scan_isolated
+
+    p = Project.load(project_dir)
+    indices = (
+        [i for i, s in enumerate(p.sources) if Path(s.path).stem == video]
+        if video else list(range(len(p.sources)))
+    )
+    if not indices:
+        console.print(f"[red]error:[/red] no matching source")
+        raise typer.Exit(code=1)
+
+    cfg = PipelineConfig(use_global_cache=not no_global_cache)
+    for i in indices:
+        run_scan_isolated(project=p, source_idx=i, pipeline_cfg=cfg)
+
+
+@cache_app.command("info")
+def cache_info() -> None:
+    """Show global scan cache status and size."""
+    from neme_anima.extraction_cache import list_caches
+
+    caches = list_caches()
+    if not caches:
+        console.print("Global cache is empty.")
+        return
+
+    total_size = sum(c.size_bytes for c in caches)
+    
+    from rich.table import Table
+    table = Table(title=f"Global Scan Cache ({len(caches)} videos, {total_size / 1024 / 1024:.1f} MB)")
+    table.add_column("Video Hash (Prefix)")
+    table.add_column("Date Cached")
+    table.add_column("Size (MB)", justify="right")
+    table.add_column("Current", justify="center")
+
+    for c in caches:
+        table.add_row(
+            c.video_hash[:12] + "...",
+            str(c.mtime.date()),
+            f"{c.size_bytes / 1024 / 1024:.1f}",
+            "✅" if c.is_current else "❌"
+        )
+    console.print(table)
+
+
+@cache_app.command("clear")
+def cache_clear() -> None:
+    """Clear all entries from the global scan cache."""
+    from neme_anima.extraction_cache import purge_cache
+
+    freed = purge_cache(delete_all=True)
+    console.print(f"[green]Cleared global cache[/green] (freed {freed / 1024 / 1024:.1f} MB).")
+
 
 
 @project_app.command("tag-loras")

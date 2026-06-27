@@ -250,11 +250,14 @@ def dedup_kept_for_video(
     chunk_size = cfg.embed_batch_size
     feature_chunks: list[np.ndarray] = []
     for chunk_start in range(0, len(pngs), chunk_size):
-        chunk_imgs = [
-            Image.open(p).convert("RGB")
-            for p in pngs[chunk_start:chunk_start + chunk_size]
-        ]
+        chunk_imgs = []
+        for p in pngs[chunk_start:chunk_start + chunk_size]:
+            with Image.open(p) as _im:
+                chunk_imgs.append(_im.convert("RGB"))
         feature_chunks.append(ccip_batch_extract_features(chunk_imgs))
+        # Explicitly drop references so GC can reclaim the pixel buffers
+        # before the next chunk is loaded.
+        del chunk_imgs
     features = np.concatenate(feature_chunks, axis=0)  # (N, D) on CPU
     progress.stage_advance("dedup", n=len(pngs))
     progress.stage_message("dedup", "computing pairwise distances")

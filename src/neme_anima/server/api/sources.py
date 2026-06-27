@@ -248,6 +248,22 @@ async def extract(
     return {"job_id": job_id}
 
 
+@router.post("/{slug}/sources/{idx}/scan", status_code=202)
+async def scan(
+    idx: int,
+    request: Request,
+    project: Project = Depends(deps.get_project),  # noqa: B008
+    _source: Source = Depends(deps.get_source),  # noqa: B008
+) -> dict:
+    job_id = await request.app.state.queue.submit({
+        "kind": "scan",
+        "project_folder": str(project.root.resolve()),
+        "project_slug": project.slug,
+        "source_idx": idx,
+    })
+    return {"job_id": job_id}
+
+
 @router.post("/{slug}/sources/{idx}/rerun", status_code=202)
 async def rerun(
     idx: int,

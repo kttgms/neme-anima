@@ -179,7 +179,34 @@ class JobQueue:
             logger.exception("queue.runner failed job_id=%s", job.job_id)
         finally:
             self._current_cancel = None
+            self._trim_finished_jobs()
             await self._publish_queue_update()
+
+    # Maximum number of finished (DONE / CANCELLED / FAILED) jobs to keep in
+    # memory for the queue-status UI. Older finished entries are evicted first.
+    # PENDING and RUNNING jobs are always preserved regardless of this limit.
+    _MAX_FINISHED_JOBS: int = 50
+
+    def _trim_finished_jobs(self) -> None:
+        """Evict old finished jobs so ``_jobs`` does not grow without bound.
+
+        The queue is append-only during a run; without trimming, every
+        completed extract job leaves a ``Job`` object (carrying a copy of
+        its ``payload`` dict) in ``_jobs`` forever. On a long-running server
+        that processes many videos this accumulates into a steady memory leak.
+        We keep at most ``_MAX_FINISHED_JOBS`` finished entries, dropping the
+        oldest ones, while always preserving every PENDING and RUNNING job.
+        """
+        terminal = [JobStatus.DONE, JobStatus.CANCELLED, JobStatus.FAILED]
+        finished = [j for j in self._jobs if j.status in terminal]
+        if len(finished) <= self._MAX_FINISHED_JOBS:
+            return
+        # Identify the oldest finished jobs to evict (list preserves insertion
+        # order, so the first entries are the oldest).
+        to_evict = set(
+            id(j) for j in finished[: len(finished) - self._MAX_FINISHED_JOBS]
+        )
+        self._jobs = [j for j in self._jobs if id(j) not in to_evict]
 
     async def _publish_queue_update(self) -> None:
         await self._broadcaster.publish(

@@ -71,7 +71,8 @@ class Identifier:
             raise ValueError("No reference images provided")
         for p in paths:
             p = Path(p)
-            img = Image.open(p).convert("RGB")
+            with Image.open(p) as _im:
+                img = _im.convert("RGB")
             feat = ccip_extract_feature(img)
             self._ref_features.append(feat)
             self._ref_paths.append(p)

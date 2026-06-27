@@ -38,6 +38,36 @@ class Video:
         self.fps = float(self._vr.get_avg_fps())
         self.num_frames = len(self._vr)
 
+    # ------------------------------------------------------------------
+    # Context-manager support — allows ``with Video(path) as vid:``
+    # which guarantees the underlying VideoReader file handle is released
+    # even if an exception occurs mid-pipeline.
+    # ------------------------------------------------------------------
+
+    def __enter__(self) -> "Video":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Explicitly release the underlying VideoReader file handle.
+
+        decord's VideoReader keeps an open file descriptor for the life of
+        the object. When the pipeline creates a new ``Video`` instance per
+        ``run_extract`` call, the old instance is not collected immediately
+        by CPython's GC (reference cycles inside the C extension can delay
+        finalization). Calling ``close()`` (or using ``Video`` as a context
+        manager) ensures the descriptor is returned promptly.
+        """
+        vr = getattr(self, "_vr", None)
+        if vr is not None:
+            # decord does not expose an explicit close/release API, but
+            # deleting the reference lets the C extension destructor run
+            # immediately in CPython's reference-counting GC.
+            del self._vr
+            self._vr = None  # type: ignore[assignment]
+
     @property
     def duration_seconds(self) -> float:
         return self.num_frames / self.fps if self.fps > 0 else 0.0
@@ -136,17 +166,26 @@ def _detect_scenes_full(
     min_scene_len_frames: int,
 ) -> list[Scene]:
     pys_video = open_video(str(video_path))
-    sm = SceneManager()
-    sm.add_detector(
-        ContentDetector(threshold=content_threshold, min_scene_len=min_scene_len_frames)
-    )
-    sm.detect_scenes(pys_video, show_progress=False)
-    raw = sm.get_scene_list()
+    try:
+        sm = SceneManager()
+        sm.add_detector(
+            ContentDetector(threshold=content_threshold, min_scene_len=min_scene_len_frames)
+        )
+        sm.detect_scenes(pys_video, show_progress=False)
+        raw = sm.get_scene_list()
+    finally:
+        # open_video() returns a VideoStream that holds a file handle.
+        # Release it immediately after detect_scenes() so it is not held
+        # for the rest of the pipeline run.
+        try:
+            pys_video.release()
+        except Exception:  # noqa: BLE001
+            pass
     scenes: list[Scene] = []
     if not raw:
         # No cuts found — entire video is one scene.
-        v = Video(video_path)
-        scenes.append(Scene(index=0, start_frame=0, end_frame=v.num_frames))
+        with Video(video_path) as v:
+            scenes.append(Scene(index=0, start_frame=0, end_frame=v.num_frames))
         return scenes
     for i, (start_tc, end_tc) in enumerate(raw):
         scenes.append(
@@ -179,23 +218,30 @@ def _detect_scenes_window(
     pys_video = open_video(str(video_path))
     fps = pys_video.frame_rate
     try:
-        pys_video.seek(FrameTimecode(start_frame, fps))
-    except Exception:
-        # Out-of-range seek: synthesize the window as a single scene so
-        # the caller's coverage stays total. Downstream stages will read
-        # back nothing if the range is truly past the video end, but the
-        # pipeline raises a clearer error on empty results elsewhere.
-        return [Scene(index=start_index, start_frame=start_frame, end_frame=end_frame)]
-    sm = SceneManager()
-    sm.add_detector(
-        ContentDetector(threshold=content_threshold, min_scene_len=min_scene_len_frames)
-    )
-    sm.detect_scenes(
-        pys_video,
-        duration=FrameTimecode(end_frame - start_frame, fps),
-        show_progress=False,
-    )
-    raw = sm.get_scene_list()
+        try:
+            pys_video.seek(FrameTimecode(start_frame, fps))
+        except Exception:
+            # Out-of-range seek: synthesize the window as a single scene so
+            # the caller's coverage stays total. Downstream stages will read
+            # back nothing if the range is truly past the video end, but the
+            # pipeline raises a clearer error on empty results elsewhere.
+            return [Scene(index=start_index, start_frame=start_frame, end_frame=end_frame)]
+        sm = SceneManager()
+        sm.add_detector(
+            ContentDetector(threshold=content_threshold, min_scene_len=min_scene_len_frames)
+        )
+        sm.detect_scenes(
+            pys_video,
+            duration=FrameTimecode(end_frame - start_frame, fps),
+            show_progress=False,
+        )
+        raw = sm.get_scene_list()
+    finally:
+        # Release the VideoStream file handle after each window scan.
+        try:
+            pys_video.release()
+        except Exception:  # noqa: BLE001
+            pass
     if not raw:
         return [Scene(index=start_index, start_frame=start_frame, end_frame=end_frame)]
     out: list[Scene] = []

@@ -2,7 +2,8 @@
 
 Wires the registry, broadcaster, and queue into `app.state` so route handlers
 can reach them via `request.app.state`. The default runner (passed to JobQueue)
-delegates to the project-centric `pipeline.run_extract` / `run_rerun`.
+delegates to the isolated_runner wrappers so each pipeline job runs in a
+dedicated child process and its memory is reclaimed by the OS on exit.
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from neme_anima.config import PipelineConfig
 from neme_anima.server.events import Broadcaster, Event
 from neme_anima.server.queue import JobQueue
 from neme_anima.server.registry import ProjectRegistry
 from neme_anima.storage.project import Project
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +58,14 @@ def _make_pipeline_runner(
         # Light imports first so we can publish the initial UI snapshot before
         # paying the (potentially seconds-long) cost of loading the pipeline's
         # heavy GPU/video deps on the first run.
-        from neme_anima.pipeline_progress import EXTRACT_STAGES, RERUN_STAGES
+        from neme_anima.pipeline_progress import EXTRACT_STAGES, RERUN_STAGES, SCAN_STAGES
         from neme_anima.server.job_progress import BroadcasterProgress
 
-        kind = payload["kind"]  # "extract" | "rerun"
+        kind = payload["kind"]  # "extract" | "rerun" | "scan"
         project_folder = Path(payload["project_folder"])
         project = Project.load(project_folder)
         source_idx: int | None = None
-        if kind == "extract":
+        if kind in ("extract", "scan"):
             source_idx = int(payload["source_idx"])
         elif kind == "rerun":
             # Resolve the source_idx by stem so the UI can correlate to the row.
@@ -86,7 +89,7 @@ def _make_pipeline_runner(
             project_slug=project.slug,
             source_idx=source_idx,
             kind=kind,
-            stages=EXTRACT_STAGES if kind == "extract" else RERUN_STAGES,
+            stages=EXTRACT_STAGES if kind == "extract" else (SCAN_STAGES if kind == "scan" else RERUN_STAGES),
         )
         progress.publish_initial()
         active_progresses[job_id] = progress
@@ -96,23 +99,34 @@ def _make_pipeline_runner(
         )
 
         # Heavy imports happen here; the UI already has its skeleton.
-        from neme_anima.pipeline import run_extract, run_rerun
+        from neme_anima.isolated_runner import (
+            run_extract_isolated,
+            run_rerun_isolated,
+            run_scan_isolated,
+        )
 
         def _do_work() -> None:
             try:
                 if kind == "extract":
-                    run_extract(
+                    run_extract_isolated(
                         project=project,
                         source_idx=int(payload["source_idx"]),
                         progress=progress,
-                        release_models=release_models,
+                        pipeline_cfg=PipelineConfig(),
                     )
                 elif kind == "rerun":
-                    run_rerun(
+                    run_rerun_isolated(
                         project=project,
                         video_stem=str(payload["video_stem"]),
                         progress=progress,
-                        release_models=release_models,
+                        pipeline_cfg=PipelineConfig(),
+                    )
+                elif kind == "scan":
+                    run_scan_isolated(
+                        project=project,
+                        source_idx=int(payload["source_idx"]),
+                        progress=progress,
+                        pipeline_cfg=PipelineConfig(),
                     )
                 else:
                     raise ValueError(f"unknown job kind: {kind!r}")
