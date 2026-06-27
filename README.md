@@ -1,5 +1,7 @@
 # Neme-Anima
 
+This is a strictly personal fork driven entirely by my own preferences. It runs in a Docker container, executes the extraction process independently to reduce memory leaks, and allows the number of workers to be configured arbitrarily based on machine performance.
+
 A three-step character LoRA builder:
 
 1. Extract crops of one or more characters from a video using reference images.
