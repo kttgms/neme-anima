@@ -2,6 +2,32 @@
 
 This is a strictly personal fork driven entirely by my own preferences. It runs in a Docker container, executes the extraction process independently to reduce memory leaks, and allows the number of workers to be configured arbitrarily based on machine performance.
 
+## Docker Compose (Alternative)
+
+For an easier setup, you can use Docker Compose. Create a `compose.yaml` (or `docker-compose.yml`) file and paste the following configuration:
+
+```yaml
+version: '3.8'
+
+services:
+  neme-anima:
+    image: neme-anima
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/neme-anima/models:/models
+      - ~/neme-projects:/data
+      - ~/Videos:/videos
+    environment: 
+      - UV_LINK_MODE=copy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
 # Neme-Anima
 
 A three-step character LoRA builder:
