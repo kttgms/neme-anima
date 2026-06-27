@@ -1,6 +1,8 @@
-# Neme-Anima
+#What is the fork for?
 
 This is a strictly personal fork driven entirely by my own preferences. It runs in a Docker container, executes the extraction process independently to reduce memory leaks, and allows the number of workers to be configured arbitrarily based on machine performance.
+
+# Neme-Anima
 
 A three-step character LoRA builder:
 
