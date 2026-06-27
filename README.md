@@ -27,6 +27,7 @@ services:
           devices:
             - driver: nvidia
               capabilities: [gpu]
+'''
 
 # Neme-Anima
 
